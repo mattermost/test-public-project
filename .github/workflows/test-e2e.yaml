@@ -17,8 +17,8 @@ jobs:
         with:
           repository_full_name: ${{ github.repository }}
           commit_sha: ${{ inputs.commit_sha || github.sha }}
-          context: ci/e2e-test
-          description: E2E tests
+          context: E2E Tests/e2e
+          description: "E2E tests running for ${{ inputs.commit_sha || github.sha }}"
           status: pending
 
   e2e:
@@ -43,9 +43,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           repository_full_name: mattermost/test-public-project
-          commit_sha: ${{ inputs.commit_sha }}
-          context: Private Repo/tests
-          description: "Private Repo tests failed for ${{ inputs.commit_sha }}"
+          commit_sha: ${{ inputs.commit_sha || github.sha }}
+          context: E2E Tests/e2e
+          description: "E2E tests running for ${{ inputs.commit_sha || github.sha }}"
           status: failure
 
   # https://mattermost.atlassian.net/browse/CLD-5815
@@ -60,7 +60,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           repository_full_name: mattermost/test-public-project
-          commit_sha: ${{ inputs.commit_sha }}
-          context: Private Repo/tests
-          description: "Private Repo tests succeeded for ${{ inputs.commit_sha }}"
+          commit_sha: ${{ inputs.commit_sha || github.sha }}
+          context: E2E Tests/e2e
+          description: "E2E tests running for ${{ inputs.commit_sha || github.sha }}"
           status: success
