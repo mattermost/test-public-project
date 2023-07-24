@@ -12,3 +12,4 @@ jobs:
           echo "Forked line from the forked repo"
           echo "Another Forked Line"
           echo "What a nice test"
+          echo "Best test ever"
