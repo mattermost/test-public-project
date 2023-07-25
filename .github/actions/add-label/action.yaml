@@ -1,0 +1,56 @@
+# Copyright 2022 Mattermost, Inc.
+name: "mattermost/add-label"
+description: "An action that adds label"
+
+inputs:
+  repository_full_name:
+    description: "The full name of the repository"
+    required: false
+  pr_number:
+    description: "The pr number for the label addition"
+    required: false
+  labels:
+    description: "The labels to add"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: ci/update-commit-status
+      uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
+      with:
+        github-token: ${{ env.GITHUB_TOKEN }}
+        script: |
+          try {
+            const labels = core
+              .getInput('labels')
+              .split('\n')
+              .filter(l => l !== '');
+
+            const number =
+              core.getInput('pr_number') === ''
+                ? github.context.issue.number
+                : parseInt(core.getInput('pr_number'));
+                
+            const repository_full_name =
+              core.getInput('repository_full_name') === ''
+                ? github.repository
+                : core.getInput('repository_full_name');
+
+            if (labels.length === 0) {
+              core.error("Labels are empty");
+              return;
+            }
+
+            await github.rest.issues.addLabels({
+              owner: REPOSITORY_FULL_NAME.split("/")[0],
+              repo: REPOSITORY_FULL_NAME.split("/")[1],
+              issue_number: number,
+              labels
+            });
+
+            core.info("Labels added successfully");
+          } catch (err) {
+            core.error("Failed to add labels");
+            core.setFailed(`Action failed with error: ${err}`);
+          }
