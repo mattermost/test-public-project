@@ -36,7 +36,6 @@ runs:
             } else {
               var repository_full_name = "${{ github.repository }}";
             }
-
             core.info(`${repository_full_name}`);
             
             if (PR_NUMBER) {
