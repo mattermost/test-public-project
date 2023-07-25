@@ -18,20 +18,23 @@ runs:
   steps:
     - name: ci/update-commit-status
       uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
+      env:
+        LABELS: ${{ inputs.labels }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        REPOSITORY_FULL_NAME: ${{ inputs.repository_full_name }}
       with:
         github-token: ${{ env.GITHUB_TOKEN }}
-        labels: ${{ inputs.labels }}
-        pr_number: ${{ inputs.pr_number }}
-        repository_full_name: ${{ inputs.repository_full_name }}
         script: |
           try {
-            var labels = core.getInput('labels', { required: true }).split('\n').filter(l => l !== '');
+            var { LABELS, REPOSITORY_FULL_NAME, PR_NUMBER } = process.env;
+
+            var labels = LABELS.split("\n").filter(l => l !== '');
             core.info(`${labels}`);
 
-            var repository_full_name = core.getInput('repository_full_name') === '' ? ${{ github.repository }} : core.getInput('repository_full_name', { required: false });
+            var repository_full_name = REPOSITORY_FULL_NAME === '' ? ${{ github.repository }} : REPOSITORY_FULL_NAME;
             core.info(`${repository_full_name}`);
             
-            var number = core.getInput('pr_number', { required: false }) === '' ? ${{ github.event.number }} : parseInt(core.getInput('pr_number', { required: false }));
+            var number = PR_NUMBER === '' ? ${{ github.event.number }} : parseInt(PR_NUMBER);
             core.info(`${number}`);
 
             if (labels.length === 0) {
