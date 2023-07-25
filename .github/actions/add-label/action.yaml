@@ -28,35 +28,29 @@ runs:
         github-token: ${{ env.GITHUB_TOKEN }}
         script: |
           try {
-            var labels = core
-              .getInput('labels')
-              .split('\n')
-              .filter(l => l !== '');
+            var labels = core.getInput('labels', { required: true }).split('\n').filter(l => l !== '');
             core.info(`${labels}`);
-            var repository_full_name =
-              core.getInput('repository_full_name') === ''
-                ? github.repository
-                : core.getInput('repository_full_name');
+
+            var repository_full_name = core.getInput('repository_full_name') === '' ? ${{ github.repository }} : core.getInput('repository_full_name', { required: false });
             core.info(`${repository_full_name}`);
-            var number =
-              core.getInput('pr_number') === ''
-                ? github.event.number
-                : parseInt(core.getInput('pr_number'));
+            
+            var number = core.getInput('pr_number', { required: false }) === '' ? ${{ github.event.number }} : parseInt(core.getInput('pr_number', { required: false }));
             core.info(`${number}`);
+
             if (labels.length === 0) {
               core.error("Labels are empty");
               return;
             }
 
             await github.rest.issues.addLabels({
-              owner: REPOSITORY_FULL_NAME.split("/")[0],
-              repo: REPOSITORY_FULL_NAME.split("/")[1],
+              owner: repository_full_name.split("/")[0],
+              repo: repository_full_name.split("/")[1],
               issue_number: number,
               labels
             });
 
             core.info("Labels added successfully");
           } catch (err) {
-            core.error("Failed to add labels");
+            core.error(`Failed to add labels: ${labels}`);
             core.setFailed(`Action failed with error: ${err}`);
           }
