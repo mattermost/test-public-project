@@ -16,16 +16,13 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Dump GitHub context
-      env:
-        GITHUB_CONTEXT: ${{ toJson(github) }}
-      run: echo "$GITHUB_CONTEXT"
-      shell: bash
-
     - name: ci/update-commit-status
       uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
         github-token: ${{ env.GITHUB_TOKEN }}
+        labels: ${{ inputs.labels }}
+        pr_number: ${{ inputs.pr_number }}
+        repository_full_name: ${{ inputs.repository_full_name }}
         script: |
           try {
             var labels = core.getInput('labels', { required: true }).split('\n').filter(l => l !== '');
