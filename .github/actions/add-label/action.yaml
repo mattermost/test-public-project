@@ -29,7 +29,7 @@ runs:
 
             const number =
               core.getInput('pr_number') === ''
-                ? github.event.number
+                ? github.event.pull_request.number
                 : parseInt(core.getInput('pr_number'));
                 
             const repository_full_name =
