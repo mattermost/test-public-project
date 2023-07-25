@@ -29,21 +29,18 @@ runs:
             var { LABELS, REPOSITORY_FULL_NAME, PR_NUMBER } = process.env;
 
             var labels = LABELS.split("\n").filter(l => l !== '');
-            core.info(`${labels}`);
 
             if (REPOSITORY_FULL_NAME) {
               var repository_full_name = REPOSITORY_FULL_NAME;
             } else {
               var repository_full_name = "${{ github.repository }}";
             }
-            core.info(`${repository_full_name}`);
             
             if (PR_NUMBER) {
               var number = parseInt(PR_NUMBER);
             } else {
               var number = parseInt("${{ github.event.number }}");
             }
-            core.info(`${number}`);
 
             if (labels.length === 0) {
               core.error("Labels are empty");
