@@ -32,17 +32,17 @@ runs:
               .getInput('labels')
               .split('\n')
               .filter(l => l !== '');
-
-            const number =
-              core.getInput('pr_number') === ''
-                ? github.event.number
-                : parseInt(core.getInput('pr_number'));
-                
+            core.info(`${labels}`);
             const repository_full_name =
               core.getInput('repository_full_name') === ''
                 ? github.repository
                 : core.getInput('repository_full_name');
-
+            core.info(`${repository_full_name}`);
+            const number =
+              core.getInput('pr_number') === ''
+                ? github.event.number
+                : parseInt(core.getInput('pr_number'));
+            core.info(`${number}`);
             if (labels.length === 0) {
               core.error("Labels are empty");
               return;
