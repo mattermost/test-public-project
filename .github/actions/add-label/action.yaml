@@ -16,6 +16,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Dump GitHub context
+      env:
+        GITHUB_CONTEXT: ${{ toJson(github) }}
+      run: echo "$GITHUB_CONTEXT"
+      shell: bash
+
     - name: ci/update-commit-status
       uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
       with:
@@ -29,7 +35,7 @@ runs:
 
             const number =
               core.getInput('pr_number') === ''
-                ? github.context.issue.number
+                ? github.event.number
                 : parseInt(core.getInput('pr_number'));
                 
             const repository_full_name =
