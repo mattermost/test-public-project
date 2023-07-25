@@ -31,10 +31,19 @@ runs:
             var labels = LABELS.split("\n").filter(l => l !== '');
             core.info(`${labels}`);
 
-            var repository_full_name = typeof REPOSITORY_FULL_NAME === 'undefined' ? "${{ github.repository }}" : REPOSITORY_FULL_NAME;
+            if (REPOSITORY_FULL_NAME) {
+              var repository_full_name = REPOSITORY_FULL_NAME;
+            } else {
+              var repository_full_name = "${{ github.repository }}";
+            }
+
             core.info(`${repository_full_name}`);
             
-            var number = typeof PR_NUMBER === 'undefined' ? parseInt("${{ github.event.number }}") : parseInt(PR_NUMBER);
+            if (PR_NUMBER) {
+              var number = parseInt(PR_NUMBER);
+            } else {
+              var number = parseInt("${{ github.event.number }}");
+            }
             core.info(`${number}`);
 
             if (labels.length === 0) {
