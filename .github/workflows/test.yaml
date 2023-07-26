@@ -21,4 +21,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          labels: Private Tests
+          labels: PrivateTests
