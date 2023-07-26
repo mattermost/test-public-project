@@ -16,6 +16,8 @@ jobs:
 
   add-label:
     runs-on: ubuntu-22.04
+    needs:
+      - testing
     steps:
       - uses: mattermost/actions/delivery/add-labels@feat/label-actions
         env:
