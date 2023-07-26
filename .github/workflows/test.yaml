@@ -14,33 +14,6 @@ jobs:
           echo "What a nice test"
           echo "Best test ever"
 
-      - uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
-        with:
-          script: |
-            var repository_full_name = "${{ github.repository }}";
-            var number = parseInt("${{ github.event.number }}");
-            var label = "PrivateTests"
-
-            // Fetch existing labels from PR
-            var labelsResponse = await github.rest.issues.listLabelsOnIssue({
-              owner: repository_full_name.split("/")[0],
-              repo: repository_full_name.split("/")[1],
-              issue_number: number,
-            });
-
-            // Get the actual labels
-            var existingLabels = labelsResponse.data
-
-            if (existingLabels.length === 0) {
-              core.info(`PR ${number} on ${repository_full_name} has no labels`);
-            } else {
-              if (existingLabels.some(existingLabel => existingLabel.name === label)) {
-                core.info(`Label ${label} will be removed successfully`);
-              } else {
-                core.info(`Label ${label} does not exist on PR ${number} for ${repository_full_name} repo`)
-              }
-            }
-
   add-label:
     runs-on: ubuntu-22.04
     ## Only add label for contributors PRs
