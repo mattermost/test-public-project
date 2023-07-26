@@ -19,14 +19,27 @@ jobs:
           script: |
             var repository_full_name = "${{ github.repository }}";
             var number = parseInt("${{ github.event.number }}");
+            var label = "PrivateTests"
 
-            var existingLabels = await github.rest.issues.listLabelsOnIssue({
+            // Fetch existing labels from PR
+            var labelsResponse = await github.rest.issues.listLabelsOnIssue({
               owner: repository_full_name.split("/")[0],
               repo: repository_full_name.split("/")[1],
               issue_number: number,
             });
 
-            core.info(`${toJson(existingLabels)}`);
+            // Get the actual labels
+            var existingLabels = labelsResponse.data
+
+            if (existingLabels.length === 0) {
+              core.info(`PR ${number} on ${repository_full_name} has no labels`);
+            } else {
+              if (existingLabels.some(existingLabel => existingLabel.name === label)) {
+                core.info(`Label ${label} will be removed successfully`);
+              } else {
+                core.info(`Label ${label} does not exist on PR ${number} for ${repository_full_name} repo`)
+              }
+            }
 
   add-label:
     runs-on: ubuntu-22.04
