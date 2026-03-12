@@ -41,6 +41,7 @@ env:
   STATUS_CONTEXT: "Tests/analysis"
   ANALYSIS_FILE: "pr-test-analysis-result.txt"
   SILENT_MODE: "true" # When true: always pass, no PR comment, results in Job Summary only
+  NOTIFY_ON_PASS: "true" # When false: only send webhook notification on failure. Set to false for production use.
   TARGET_REPO: ${{ github.event_name == 'workflow_dispatch' && format('mattermost/{0}', inputs.repo) || github.repository }}
 
 jobs:
@@ -54,8 +55,8 @@ jobs:
       - name: ci/resolve-pr-info
         id: pr-info
         env:
-          # GH_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Use PAT for cross-repo access on dispatch; github.token suffices for pull_request
+          GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.GH_TOKEN || github.token }}
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             PR_NUMBER="${{ inputs.pr_number }}"
@@ -89,8 +90,6 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           use_sticky_comment: "true"
-          # TODO: remove after debugging
-          show_full_output: "true"
           prompt: |
             REPO: ${{ env.TARGET_REPO }}
             PR NUMBER: ${{ steps.pr-info.outputs.pr_number }}
@@ -205,9 +204,9 @@ jobs:
             --allowedTools "Bash(gh pr diff*),Bash(gh pr view*),Write"
 
       - name: ci/post-results
+        id: post-results
         env:
-          # GH_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.GH_TOKEN || github.token }}
           COMMIT_SHA: ${{ steps.pr-info.outputs.head_sha }}
           AI_OUTCOME: ${{ steps.ai-analysis.outcome }}
           PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
@@ -263,6 +262,21 @@ jobs:
             exit 0
           fi
 
+          # Export verdict for downstream steps (heredoc-safe for multi-line values)
+          echo "verdict_type=${VERDICT_TYPE}" >> "$GITHUB_OUTPUT"
+
+          echo "status_desc<<GHOUTPUT_DELIM" >> "$GITHUB_OUTPUT"
+          echo "${STATUS_DESC}" >> "$GITHUB_OUTPUT"
+          echo "GHOUTPUT_DELIM" >> "$GITHUB_OUTPUT"
+
+          echo "short_summary<<GHOUTPUT_DELIM" >> "$GITHUB_OUTPUT"
+          echo "${SHORT_SUMMARY}" >> "$GITHUB_OUTPUT"
+          echo "GHOUTPUT_DELIM" >> "$GITHUB_OUTPUT"
+
+          echo "recommendation<<GHOUTPUT_DELIM" >> "$GITHUB_OUTPUT"
+          echo "${RECOMMENDATION}" >> "$GITHUB_OUTPUT"
+          echo "GHOUTPUT_DELIM" >> "$GITHUB_OUTPUT"
+
           case "$VERDICT_TYPE" in
             PASS|PASS_NOT_NEEDED)
               STATE="success"
@@ -275,6 +289,8 @@ jobs:
               STATUS_DESC="Analysis complete — see details"
               ;;
           esac
+
+          echo "state=${STATE}" >> "$GITHUB_OUTPUT"
 
           # Silent mode: always pass, no PR comment, results in Job Summary only
           if [ "$SILENT_MODE" == "true" ]; then
@@ -369,8 +385,7 @@ jobs:
       - name: ci/remove-stale-verified-label
         if: always()
         env:
-          # GH_TOKEN: ${{ github.token }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.GH_TOKEN || github.token }}
           PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
         run: |
           # Query live labels (not the event snapshot) in case label was added during analysis
@@ -381,3 +396,64 @@ jobs:
             ENCODED_LABEL=$(echo "$OVERRIDE_LABEL" | jq -sRr @uri)
             gh api "repos/${{ env.TARGET_REPO }}/issues/${PR_NUMBER}/labels/${ENCODED_LABEL}" -X DELETE 2>/dev/null || true
           fi
+
+      - name: ci/notify-channel
+        if: >-
+          always() &&
+          (env.NOTIFY_ON_PASS == 'true' || steps.post-results.outputs.state != 'success')
+        env:
+          REPORT_WEBHOOK_URL: ${{ secrets.MM_E2E_REPORT_WEBHOOK_URL }}
+          AI_OUTCOME: ${{ steps.ai-analysis.outcome }}
+          STATE: ${{ steps.post-results.outputs.state }}
+          VERDICT_TYPE: ${{ steps.post-results.outputs.verdict_type }}
+          STATUS_DESC: ${{ steps.post-results.outputs.status_desc }}
+          PR_NUMBER: ${{ steps.pr-info.outputs.pr_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$REPORT_WEBHOOK_URL" ]; then
+            echo "No webhook URL configured — skipping notification"
+            exit 0
+          fi
+
+          PR_URL="${{ github.server_url }}/${{ env.TARGET_REPO }}/pull/${PR_NUMBER}"
+
+          # Determine color: green for pass, red for fail, yellow for unavailable
+          if [ "$AI_OUTCOME" != "success" ]; then
+            COLOR="#CCCC00"
+            STATUS_DESC="Analysis unavailable — manual review required"
+            ANALYSIS_TEXT="Analysis unavailable — manual review required"
+            SUGGESTIONS_TEXT=""
+          else
+            # Extract Analysis and Suggestions sections from the analysis file
+            ANALYSIS_TEXT=""
+            SUGGESTIONS_TEXT=""
+            if [ -f "${ANALYSIS_FILE}" ]; then
+              ANALYSIS_TEXT=$(sed -n '/<details>/{:a;N;/<\/details>/!ba;/Analysis/p}' "${ANALYSIS_FILE}" 2>/dev/null | sed 's/<[^>]*>//g' | sed '/^$/d' | head -20 || true)
+              SUGGESTIONS_TEXT=$(sed -n '/<details>/{:a;N;/<\/details>/!ba;/Suggestions/p}' "${ANALYSIS_FILE}" 2>/dev/null | sed 's/<[^>]*>//g' | sed '/^$/d' | head -10 || true)
+            fi
+
+            if [ "$STATE" == "success" ]; then
+              COLOR="#00CC00"
+            else
+              COLOR="#CC0000"
+            fi
+          fi
+
+          # Build message body
+          MESSAGE=":open-pull-request: [${TARGET_REPO}#${PR_NUMBER}](${PR_URL})"
+          [ -n "$ANALYSIS_TEXT" ] && MESSAGE="${MESSAGE}\n\n**Analysis**\n${ANALYSIS_TEXT}"
+          [ -n "$SUGGESTIONS_TEXT" ] && MESSAGE="${MESSAGE}\n\n**Suggestions**\n${SUGGESTIONS_TEXT}"
+          MESSAGE="${MESSAGE}\n\n[View full report](${RUN_URL})"
+
+          FULL_TEXT=$(printf "**PR Test Analysis — %s**\n\n%s" "${STATUS_DESC:-unavailable}" "${MESSAGE}")
+
+          PAYLOAD=$(jq -n \
+            --arg color "$COLOR" \
+            --arg text "$FULL_TEXT" \
+            '{
+              username: "PR Test Analysis",
+              icon_url: "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png",
+              attachments: [{color: $color, text: $text}]
+            }')
+
+          curl -s -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$REPORT_WEBHOOK_URL"
