@@ -179,7 +179,7 @@ jobs:
             Where `<verdict_type>` is one of: `PASS`, `PASS_NOT_NEEDED`, `FAIL_MISSING`, `FAIL_INSUFFICIENT`.
 
             Where:
-            - `status_description`: Max 140 chars for commit status (e.g., "Tests included: 2 unit, 1 integration" or "No tests needed: non-production changes" or "Tests missing — see PR comment")
+            - `status_description`: Max 140 chars for commit status. For PASS: summarize what tests are included (e.g., "Tests included: 2 unit, 1 integration"). For FAIL: include a short actionable suggestion (e.g., "Tests missing: add unit tests for props merging in UpdatePost"). Do NOT include "see PR comment" references.
             - `short_summary`: 1-2 sentence summary for PR comment
             - `recommendation`: 1-2 sentence recommendation for PR comment
             - `files_note`: If you hit the 50-file limit for either source or test files, include a note like "Max files limit reached: analyzed 50 of 120 source files and 30 of 62 test files only". If all files were reviewed, leave this empty.
@@ -187,8 +187,8 @@ jobs:
             Examples:
             - `VERDICT: PASS<SEP>Tests included: 2 unit, 1 integration<SEP>PR includes 2 unit tests and 1 integration test covering the API changes.<SEP>Tests adequately cover the modified endpoints.<SEP>`
             - `VERDICT: PASS_NOT_NEEDED<SEP>No tests needed: non-production changes<SEP>PR only modifies configuration constants with no behavioral impact.<SEP>No test changes required.<SEP>`
-            - `VERDICT: FAIL_MISSING<SEP>Tests missing — see PR comment<SEP>PR adds new API endpoint but no corresponding test file.<SEP>Add integration tests for the new endpoint.<SEP>`
-            - `VERDICT: FAIL_INSUFFICIENT<SEP>Tests insufficient — see PR comment<SEP>PR modifies authentication logic but tests only cover the happy path.<SEP>Add tests for invalid credentials, expired tokens, and rate limiting scenarios.<SEP>Max files limit reached: analyzed 50 of 85 source files and 50 of 62 test files only`
+            - `VERDICT: FAIL_MISSING<SEP>Tests missing: add integration tests for new /api/v4/users endpoint<SEP>PR adds new API endpoint but no corresponding test file.<SEP>Add integration tests in server/channels/api4/user_test.go for the new endpoint.<SEP>`
+            - `VERDICT: FAIL_INSUFFICIENT<SEP>Tests insufficient: add error path tests for auth middleware<SEP>PR modifies authentication logic but tests only cover the happy path.<SEP>Add tests for invalid credentials, expired tokens, and rate limiting scenarios.<SEP>Max files limit reached: analyzed 50 of 85 source files and 50 of 62 test files only`
 
             ## Rules
 
@@ -428,8 +428,8 @@ jobs:
             ANALYSIS_TEXT=""
             SUGGESTIONS_TEXT=""
             if [ -f "${ANALYSIS_FILE}" ]; then
-              ANALYSIS_TEXT=$(sed -n '/<details>/{:a;N;/<\/details>/!ba;/Analysis/p}' "${ANALYSIS_FILE}" 2>/dev/null | sed 's/<[^>]*>//g' | sed '/^$/d' | head -20 || true)
-              SUGGESTIONS_TEXT=$(sed -n '/<details>/{:a;N;/<\/details>/!ba;/Suggestions/p}' "${ANALYSIS_FILE}" 2>/dev/null | sed 's/<[^>]*>//g' | sed '/^$/d' | head -10 || true)
+              ANALYSIS_TEXT=$(sed -n '/<details>/{:a;N;/<\/details>/!ba;/Analysis/p}' "${ANALYSIS_FILE}" 2>/dev/null | sed '/<summary>/d;/<details>/d;/<\/details>/d' | sed '/^$/d' | head -20 || true)
+              SUGGESTIONS_TEXT=$(sed -n '/<details>/{:a;N;/<\/details>/!ba;/Suggestions/p}' "${ANALYSIS_FILE}" 2>/dev/null | sed '/<summary>/d;/<details>/d;/<\/details>/d' | sed '/^$/d' | head -10 || true)
             fi
 
             if [ "$STATE" == "success" ]; then
