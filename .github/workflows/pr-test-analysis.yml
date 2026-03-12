@@ -35,6 +35,7 @@ permissions:
   id-token: write # Required by claude-code-action for OIDC authentication
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CLAUDE_MODEL: "claude-opus-4-6"
   OVERRIDE_LABEL: "Tests/verified"
   STATUS_CONTEXT: "Tests/analysis"
@@ -88,6 +89,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           use_sticky_comment: "true"
+          # TODO: remove after debugging
+          show_full_output: "true"
           prompt: |
             REPO: ${{ env.TARGET_REPO }}
             PR NUMBER: ${{ steps.pr-info.outputs.pr_number }}
@@ -136,10 +139,12 @@ jobs:
 
             You MUST output your analysis in EXACTLY this format. Do not deviate.
 
-            First, write the full analysis details to both `$GITHUB_STEP_SUMMARY` (for the Actions UI) and `${{ env.ANALYSIS_FILE }}` (for downstream steps):
+            IMPORTANT: You may ONLY use commands starting with `gh pr diff`, `gh pr view`, `cat >>`, or `echo `. No other commands are allowed.
+
+            Write the analysis to both `$GITHUB_STEP_SUMMARY` and `${{ env.ANALYSIS_FILE }}` using `cat >>`:
 
             ```bash
-            ANALYSIS_OUTPUT=$(cat << 'SUMMARY_EOF'
+            cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
             <details>
             <summary>Test Files Detected</summary>
 
@@ -173,12 +178,16 @@ jobs:
 
             </details>
             SUMMARY_EOF
-            )
-            echo "$ANALYSIS_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
-            echo "$ANALYSIS_OUTPUT" > "${{ env.ANALYSIS_FILE }}"
             ```
 
-            Then, append your verdict to `${{ env.ANALYSIS_FILE }}`:
+            Then write the same content to the analysis file:
+            ```bash
+            cat >> "${{ env.ANALYSIS_FILE }}" << 'ANALYSIS_EOF'
+            [same content as above]
+            ANALYSIS_EOF
+            ```
+
+            Finally, append your verdict:
             ```bash
             echo 'VERDICT: <verdict_type><SEP><status_description><SEP><short_summary><SEP><recommendation><SEP><files_note>' >> "${{ env.ANALYSIS_FILE }}"
             ```
