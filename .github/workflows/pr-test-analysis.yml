@@ -139,12 +139,9 @@ jobs:
 
             You MUST output your analysis in EXACTLY this format. Do not deviate.
 
-            IMPORTANT: You may ONLY use commands starting with `gh pr diff`, `gh pr view`, `cat >>`, or `echo `. No other commands are allowed.
+            Use the `Write` tool to write the analysis to `${{ env.ANALYSIS_FILE }}`. The file content must follow this structure, with the VERDICT line at the very end:
 
-            Write the analysis to both `$GITHUB_STEP_SUMMARY` and `${{ env.ANALYSIS_FILE }}` using `cat >>`:
-
-            ```bash
-            cat >> "$GITHUB_STEP_SUMMARY" << 'SUMMARY_EOF'
+            ```
             <details>
             <summary>Test Files Detected</summary>
 
@@ -177,19 +174,7 @@ jobs:
             [List of files, note if any excluded due to limit]
 
             </details>
-            SUMMARY_EOF
-            ```
-
-            Then write the same content to the analysis file:
-            ```bash
-            cat >> "${{ env.ANALYSIS_FILE }}" << 'ANALYSIS_EOF'
-            [same content as above]
-            ANALYSIS_EOF
-            ```
-
-            Finally, append your verdict:
-            ```bash
-            echo 'VERDICT: <verdict_type><SEP><status_description><SEP><short_summary><SEP><recommendation><SEP><files_note>' >> "${{ env.ANALYSIS_FILE }}"
+            VERDICT: <verdict_type><SEP><status_description><SEP><short_summary><SEP><recommendation><SEP><files_note>
             ```
 
             Where `<verdict_type>` is one of: `PASS`, `PASS_NOT_NEEDED`, `FAIL_MISSING`, `FAIL_INSUFFICIENT`.
@@ -217,7 +202,7 @@ jobs:
           claude_args: |
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 15
-            --allowedTools "Bash(gh pr diff*),Bash(gh pr view*),Bash(cat >>*),Bash(echo *)"
+            --allowedTools "Bash(gh pr diff*),Bash(gh pr view*),Write"
 
       - name: ci/post-results
         env:
@@ -238,6 +223,11 @@ jobs:
               -f description="Analysis unavailable — manual review required" \
               -f target_url="${RUN_URL}"
             exit 0
+          fi
+
+          # Copy analysis to Job Summary
+          if [ -f "${ANALYSIS_FILE}" ]; then
+            grep -v '^VERDICT:' "${ANALYSIS_FILE}" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           fi
 
           # Parse the VERDICT line from the analysis file written by Claude
