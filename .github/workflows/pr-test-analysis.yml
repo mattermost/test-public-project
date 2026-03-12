@@ -74,6 +74,13 @@ jobs:
             echo "head_repo=${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
           } >> "$GITHUB_OUTPUT"
 
+      # Required: claude-code-action needs a git directory to initialize.
+      # Checks out this repo only — target repo code is read remotely via gh CLI.
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
       - name: ci/analyze-tests
         id: ai-analysis
         continue-on-error: true
