@@ -439,13 +439,14 @@ jobs:
             fi
           fi
 
-          # Build message body
+          # Build message body using real newlines
+          NL=$'\n'
           MESSAGE=":open-pull-request: [${TARGET_REPO}#${PR_NUMBER}](${PR_URL})"
-          [ -n "$ANALYSIS_TEXT" ] && MESSAGE="${MESSAGE}\n\n**Analysis**\n${ANALYSIS_TEXT}"
-          [ -n "$SUGGESTIONS_TEXT" ] && MESSAGE="${MESSAGE}\n\n**Suggestions**\n${SUGGESTIONS_TEXT}"
-          MESSAGE="${MESSAGE}\n\n[View full report](${RUN_URL})"
+          [ -n "$ANALYSIS_TEXT" ] && MESSAGE="${MESSAGE}${NL}${NL}**Analysis**${NL}${ANALYSIS_TEXT}"
+          [ -n "$SUGGESTIONS_TEXT" ] && MESSAGE="${MESSAGE}${NL}${NL}**Suggestions**${NL}${SUGGESTIONS_TEXT}"
+          MESSAGE="${MESSAGE}${NL}${NL}[View full report](${RUN_URL})"
 
-          FULL_TEXT=$(printf "**PR Test Analysis — %s**\n\n%s" "${STATUS_DESC:-unavailable}" "${MESSAGE}")
+          FULL_TEXT="**PR Test Analysis — ${STATUS_DESC:-unavailable}**${NL}${NL}${MESSAGE}"
 
           PAYLOAD=$(jq -n \
             --arg color "$COLOR" \
