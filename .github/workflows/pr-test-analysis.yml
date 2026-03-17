@@ -469,11 +469,11 @@ jobs:
           # Build message: main content in "text" (visible to channel AI), summary in "attachments"
           NL=$'\n'
           TEXT_BODY=":github: [${TARGET_REPO}#${PR_NUMBER}](${PR_URL})"
-          [ -n "$ANALYSIS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**Analysis**${NL}${ANALYSIS_TEXT}"
+          [ -n "$ANALYSIS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**AI Analysis**${NL}${ANALYSIS_TEXT}"
           [ -n "$SUGGESTIONS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**Suggestions**${NL}${SUGGESTIONS_TEXT}"
-          TEXT_BODY="${TEXT_BODY}${NL}${NL}[View full report](${RUN_URL})"
+          TEXT_BODY="${TEXT_BODY}${NL}${NL}Model: \`${CLAUDE_MODEL}\` | [CI pipeline](${RUN_URL})"
 
-          ATTACHMENT_TEXT="**PR Test Analysis — ${STATUS_DESC:-unavailable}**"
+          ATTACHMENT_TEXT="**AI Analysis - ${STATUS_DESC:-unavailable}**"
 
           PAYLOAD=$(jq -n \
             --arg text "$TEXT_BODY" \
