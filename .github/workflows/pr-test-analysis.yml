@@ -23,6 +23,10 @@ on:
         description: 'PR number from the target repo'
         required: true
         type: number
+      claude_model:
+        description: 'Claude model to use (overrides repository variable)'
+        required: false
+        type: string
 
 concurrency:
   group: test-analyzer-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -36,7 +40,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  CLAUDE_MODEL: "claude-opus-4-6"
+  CLAUDE_MODEL: ${{ inputs.claude_model || vars.CLAUDE_MODEL || 'claude-sonnet-4-6' }}
   OVERRIDE_LABEL: "Tests/verified"
   STATUS_CONTEXT: "Tests/analysis"
   ANALYSIS_FILE: "pr-test-analysis-result.txt"
@@ -83,6 +87,36 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: ci/prep-analysis-data
+        id: prep
+        env:
+          GH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && secrets.GH_TOKEN || github.token }}
+        run: |
+          PR_NUM=${{ steps.pr-info.outputs.pr_number }}
+          REPO=${{ env.TARGET_REPO }}
+
+          # Fetch core data
+          gh pr view "$PR_NUM" --repo "$REPO" --json body --jq '.body' > pr_body.txt
+
+          # Get all changed files
+          gh pr diff "$PR_NUM" --repo "$REPO" --name-only > all_files.txt
+
+          # Extract Test Files (based on your conventions)
+          grep -E "_test\.go|\.test\.(ts|tsx|js)|e2e-tests/|detox/|e2e/" all_files.txt > test_files.txt || true
+
+          # Extract Production Files (Exclude tests, docs, config, and lockfiles)
+          grep -v -E "_test\.go|\.test\.(ts|tsx|js)|e2e-tests/|detox/|e2e/|\.github/|scripts/|build/|docs/|i18n/|patches/|fastlane/|resources/|assets/|Makefile|\.md|\.yml|\.yaml|package-lock\.json|go\.sum" all_files.txt > prod_files.txt || true
+
+          # Generate a filtered diff containing ONLY production and test files
+          cat prod_files.txt test_files.txt | sort | uniq > relevant_files.txt
+
+          if [ -s relevant_files.txt ]; then
+            # xargs safely passes the file list to gh pr diff to only fetch the diff for relevant files
+            cat relevant_files.txt | tr '\n' ' ' | xargs gh pr diff "$PR_NUM" --repo "$REPO" > filtered_diff.diff
+          else
+            touch filtered_diff.diff
+          fi
+
       - name: ci/analyze-tests
         id: ai-analysis
         continue-on-error: true
@@ -95,40 +129,21 @@ jobs:
             PR NUMBER: ${{ steps.pr-info.outputs.pr_number }}
 
             ## Task
+            You are an expert QA engineer and Software Engineer in Test. Analyze this pull request to determine test coverage adequacy.
+            All non-production paths and non-relevant files have already been filtered out.
 
-            You are an expert QA engineer and Software Engineer in Test for the ${{ env.TARGET_REPO }} repository. Analyze this pull request to determine test coverage adequacy.
-
-            Analyze all production code changes in this pull request.
-
-            **Non-production paths to ignore** (unless they contain testable logic):
-            `.github/`, `scripts/`, `build/`, `docs/`, `i18n/`, `patches/`, `fastlane/`, `resources/`, `assets/`, `Makefile`, `*.md`, `*.yml`/`*.yaml` (CI configs), `package-lock.json`, `go.sum`
-
-            ## Test File Detection
-
-            Detect test files based on these conventions used across mattermost repos:
-
-            **Unit/Integration tests:**
-            - **Go**: `*_test.go` (colocated with source)
-            - **TypeScript/JavaScript**: `*.test.ts`, `*.test.tsx`, `*.test.js` (colocated with source)
-
-            **E2E tests** (files within dedicated E2E directories):
-            - `e2e-tests/**` — Cypress (`*_spec.js`, `*_spec.ts`) and Playwright tests
-            - `detox/**` — Mobile E2E tests (`*.e2e.ts`)
-            - `e2e/**` — Desktop E2E tests (`*.test.js` via Mocha/WebdriverIO)
-
-            Categorize detected test files as **unit**, **integration**, or **E2E** based on their path and naming conventions.
+            ## Context Files Provided in Workspace:
+            - `pr_body.txt`: The developer's description of the PR.
+            - `prod_files.txt`: The deterministic list of modified production code files.
+            - `test_files.txt`: The deterministic list of modified test files.
+            - `filtered_diff.diff`: The code changes restricted ONLY to the relevant production and test files.
 
             ## Analysis Steps
-
-            1. **Read the PR diff** using `gh pr diff ${{ steps.pr-info.outputs.pr_number }} --repo ${{ env.TARGET_REPO }}` to understand what changed.
-            2. **Read the PR description** using `gh pr view ${{ steps.pr-info.outputs.pr_number }} --repo ${{ env.TARGET_REPO }} --json body --jq '.body'` as supplementary context (empty description is acceptable).
-            3. **Identify production code vs non-production changes.** If the PR only modifies non-production paths listed above, verdict is `PASS_NOT_NEEDED`.
-            4. **Identify test files** in the diff using the conventions above. Categorize each as unit, integration, or E2E.
-            5. **Evaluate the production code changes**: Determine whether the nature of the modifications requires tests.
-               - Changes that typically require tests: new logic, changed behavior, new API endpoints, bug fixes, new components
-               - Changes that typically do NOT require tests: logging updates, comment changes, documentation, dependency updates, trivial refactors, variable renames
-            6. **Assess test sufficiency**: If tests are present, evaluate whether they adequately cover the production code changes.
-            7. **Determine your verdict**: One of:
+            1. Read `prod_files.txt` and `test_files.txt` to understand the scope of changes.
+            2. Read `filtered_diff.diff` to evaluate the actual logic changes. If `prod_files.txt` is empty, the verdict is `PASS_NOT_NEEDED`.
+            3. Evaluate the production code changes in the diff: Determine whether the new logic, bug fixes, or components require tests.
+            4. Assess test sufficiency: If tests are present in `test_files.txt`, evaluate whether they adequately cover the logic modified in `prod_files.txt`.
+            5. **Determine your verdict**: One of:
                - `PASS` — Tests are included and adequate
                - `PASS_NOT_NEEDED` — No tests needed (with a category: documentation, refactor, logging, dependency, no server/webapp changes, etc.)
                - `FAIL_MISSING` — Tests are required but missing
@@ -200,8 +215,8 @@ jobs:
             - When in doubt about test necessity, lean toward requiring tests.
           claude_args: |
             --model ${{ env.CLAUDE_MODEL }}
-            --max-turns 15
-            --allowedTools "Bash(gh pr diff*),Bash(gh pr view*),Write"
+            --max-turns 5
+            --allowedTools "Read,Write"
 
       - name: ci/post-results
         id: post-results
