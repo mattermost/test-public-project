@@ -227,7 +227,7 @@ jobs:
             - When in doubt about test necessity, lean toward requiring tests.
           claude_args: |
             --model ${{ env.CLAUDE_MODEL }}
-            --max-turns 5
+            --max-turns 15
             --allowedTools "Read,Write"
 
       - name: ci/post-results
