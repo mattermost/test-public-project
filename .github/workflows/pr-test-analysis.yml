@@ -473,7 +473,7 @@ jobs:
           elif [ "$STATE" == "success" ]; then
             RESULT=":white_check_mark: Pass - ${STATUS_DESC:-tests adequate}"
           else
-            RESULT="Fail - ${STATUS_DESC:-see details}"
+            RESULT=":red_circle: Fail - ${STATUS_DESC:-see details}"
           fi
           TEXT_BODY="${RESULT}"
           [ -n "$ANALYSIS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**AI Analysis**${NL}${ANALYSIS_TEXT}"
