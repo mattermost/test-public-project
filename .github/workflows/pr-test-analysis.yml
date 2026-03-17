@@ -469,17 +469,17 @@ jobs:
           # Build message: main content in "text" (visible to channel AI), summary in "attachments"
           NL=$'\n'
           if [ "$AI_OUTCOME" != "success" ]; then
-            RESULT="Unavailable"
+            RESULT="Unavailable - manual review required"
           elif [ "$STATE" == "success" ]; then
-            RESULT="Pass"
+            RESULT=":white_check_mark: Pass - ${STATUS_DESC:-tests adequate}"
           else
-            RESULT="Fail"
+            RESULT="Fail - ${STATUS_DESC:-see details}"
           fi
-          TEXT_BODY="${RESULT} | [${TARGET_REPO}#${PR_NUMBER}](${PR_URL}) | model: \`${CLAUDE_MODEL}\` | [CI pipeline](${RUN_URL})"
+          TEXT_BODY="${RESULT}"
           [ -n "$ANALYSIS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**AI Analysis**${NL}${ANALYSIS_TEXT}"
           [ -n "$SUGGESTIONS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**Suggestions**${NL}${SUGGESTIONS_TEXT}"
 
-          ATTACHMENT_TEXT="**Assessment - ${STATUS_DESC:-unavailable}**"
+          ATTACHMENT_TEXT=":github: [${TARGET_REPO}#${PR_NUMBER}](${PR_URL}) | [CI pipeline](${RUN_URL}) | model: \`${CLAUDE_MODEL}\`"
 
           PAYLOAD=$(jq -n \
             --arg text "$TEXT_BODY" \
