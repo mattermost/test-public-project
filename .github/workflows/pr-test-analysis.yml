@@ -24,7 +24,7 @@ on:
         required: true
         type: number
       claude_model:
-        description: 'Claude model to use (overrides repository variable)'
+        description: 'Claude model to use (default: claude-sonnet-4-6)'
         required: false
         type: string
 
@@ -429,7 +429,7 @@ jobs:
           always() &&
           (env.NOTIFY_ON_PASS == 'true' || steps.post-results.outputs.state != 'success')
         env:
-          REPORT_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL_TEST_PR_ANALYSIS_HUB }}
+          REPORT_WEBHOOK_URL: ${{ secrets.MM_E2E_REPORT_WEBHOOK_URL }}
           AI_OUTCOME: ${{ steps.ai-analysis.outcome }}
           STATE: ${{ steps.post-results.outputs.state }}
           VERDICT_TYPE: ${{ steps.post-results.outputs.verdict_type }}
