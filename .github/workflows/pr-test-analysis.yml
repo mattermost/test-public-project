@@ -429,7 +429,7 @@ jobs:
           always() &&
           (env.NOTIFY_ON_PASS == 'true' || steps.post-results.outputs.state != 'success')
         env:
-          REPORT_WEBHOOK_URL: ${{ secrets.MM_E2E_REPORT_WEBHOOK_URL }}
+          REPORT_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL_TEST_PR_ANALYSIS_HUB }}
           AI_OUTCOME: ${{ steps.ai-analysis.outcome }}
           STATE: ${{ steps.post-results.outputs.state }}
           VERDICT_TYPE: ${{ steps.post-results.outputs.verdict_type }}
@@ -466,22 +466,24 @@ jobs:
             fi
           fi
 
-          # Build message body using real newlines
+          # Build message: main content in "text" (visible to channel AI), summary in "attachments"
           NL=$'\n'
-          MESSAGE=":open-pull-request: [${TARGET_REPO}#${PR_NUMBER}](${PR_URL})"
-          [ -n "$ANALYSIS_TEXT" ] && MESSAGE="${MESSAGE}${NL}${NL}**Analysis**${NL}${ANALYSIS_TEXT}"
-          [ -n "$SUGGESTIONS_TEXT" ] && MESSAGE="${MESSAGE}${NL}${NL}**Suggestions**${NL}${SUGGESTIONS_TEXT}"
-          MESSAGE="${MESSAGE}${NL}${NL}[View full report](${RUN_URL})"
+          TEXT_BODY=":github: [${TARGET_REPO}#${PR_NUMBER}](${PR_URL})"
+          [ -n "$ANALYSIS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**Analysis**${NL}${ANALYSIS_TEXT}"
+          [ -n "$SUGGESTIONS_TEXT" ] && TEXT_BODY="${TEXT_BODY}${NL}${NL}**Suggestions**${NL}${SUGGESTIONS_TEXT}"
+          TEXT_BODY="${TEXT_BODY}${NL}${NL}[View full report](${RUN_URL})"
 
-          FULL_TEXT="**PR Test Analysis — ${STATUS_DESC:-unavailable}**${NL}${NL}${MESSAGE}"
+          ATTACHMENT_TEXT="**PR Test Analysis — ${STATUS_DESC:-unavailable}**"
 
           PAYLOAD=$(jq -n \
+            --arg text "$TEXT_BODY" \
             --arg color "$COLOR" \
-            --arg text "$FULL_TEXT" \
+            --arg attachment_text "$ATTACHMENT_TEXT" \
             '{
               username: "PR Test Analysis",
               icon_url: "https://mattermost.com/wp-content/uploads/2022/02/icon_WS.png",
-              attachments: [{color: $color, text: $text}]
+              text: $text,
+              attachments: [{color: $color, text: $attachment_text}]
             }')
 
           curl -s -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$REPORT_WEBHOOK_URL"
