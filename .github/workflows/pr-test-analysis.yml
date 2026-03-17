@@ -111,8 +111,20 @@ jobs:
           cat prod_files.txt test_files.txt | sort | uniq > relevant_files.txt
 
           if [ -s relevant_files.txt ]; then
-            # xargs safely passes the file list to gh pr diff to only fetch the diff for relevant files
-            cat relevant_files.txt | tr '\n' ' ' | xargs gh pr diff "$PR_NUM" --repo "$REPO" > filtered_diff.diff
+            # Fetch the full diff, then filter to keep only hunks for relevant files
+            gh pr diff "$PR_NUM" --repo "$REPO" > full_diff.diff
+
+            # Use awk to extract only diff sections whose header matches a relevant file
+            awk '
+              BEGIN { while ((getline line < "relevant_files.txt") > 0) files[line]=1 }
+              /^diff --git/ {
+                fname = $0; sub(/.*b\//, "", fname)
+                printing = (fname in files)
+              }
+              printing { print }
+            ' full_diff.diff > filtered_diff.diff
+
+            rm -f full_diff.diff
           else
             touch filtered_diff.diff
           fi
@@ -417,7 +429,7 @@ jobs:
           always() &&
           (env.NOTIFY_ON_PASS == 'true' || steps.post-results.outputs.state != 'success')
         env:
-          REPORT_WEBHOOK_URL: ${{ secrets.MM_E2E_REPORT_WEBHOOK_URL }}
+          REPORT_WEBHOOK_URL: ${{ secrets.WEBHOOK_URL_TEST_PR_ANALYSIS_HUB }}
           AI_OUTCOME: ${{ steps.ai-analysis.outcome }}
           STATE: ${{ steps.post-results.outputs.state }}
           VERDICT_TYPE: ${{ steps.post-results.outputs.verdict_type }}
