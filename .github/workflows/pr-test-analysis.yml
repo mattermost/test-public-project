@@ -113,19 +113,21 @@ jobs:
           # Copy PR body from temp path (written before checkout)
           cp "$RUNNER_TEMP/pr_body.txt" pr_body.txt
 
-          # For same-repo PRs, use git fetch + local diff (no API size limits).
-          # For cross-repo dispatch, fall back to gh API.
+          # Use git fetch + local diff to avoid GitHub API size limits (20k lines).
+          # For cross-repo dispatch, add the target as a temporary remote.
           if [ "$REPO" == "${{ github.repository }}" ]; then
             git fetch origin "$BASE_BRANCH" "pull/$PR_NUM/head:pr-$PR_NUM" --depth=50
-            MERGE_BASE=$(git merge-base "origin/$BASE_BRANCH" "pr-$PR_NUM")
-            git diff "$MERGE_BASE" "pr-$PR_NUM" > full_diff.diff
-
-            # Derive file list from the diff (avoids a second API call)
-            grep '^diff --git' full_diff.diff | sed 's|.*b/||' > all_files.txt
           else
-            gh pr diff "$PR_NUM" --repo "$REPO" --name-only > all_files.txt
-            gh pr diff "$PR_NUM" --repo "$REPO" > full_diff.diff
+            git remote add target "https://github.com/${REPO}.git"
+            git fetch target "$BASE_BRANCH" "pull/$PR_NUM/head:pr-$PR_NUM" --depth=50
           fi
+
+          REMOTE_NAME=$( [ "$REPO" == "${{ github.repository }}" ] && echo "origin" || echo "target" )
+          MERGE_BASE=$(git merge-base "${REMOTE_NAME}/$BASE_BRANCH" "pr-$PR_NUM")
+          git diff "$MERGE_BASE" "pr-$PR_NUM" > full_diff.diff
+
+          # Derive file list from the diff (avoids a second API call)
+          grep '^diff --git' full_diff.diff | sed 's|.*b/||' > all_files.txt
 
           # Extract Test Files (based on your conventions)
           grep -E "_test\.go|\.test\.(ts|tsx|js)|e2e-tests/|detox/|e2e/" all_files.txt > test_files.txt || true
