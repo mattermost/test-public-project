@@ -92,7 +92,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           # Write PR body to a temp path that survives checkout
-          echo "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr_body.txt"
 
       # Required: claude-code-action needs a git directory to initialize.
       # Checks out this repo only — target repo code is read remotely via gh CLI.
@@ -123,7 +123,11 @@ jobs:
           fi
 
           REMOTE_NAME=$( [ "$REPO" == "${{ github.repository }}" ] && echo "origin" || echo "target" )
-          MERGE_BASE=$(git merge-base "${REMOTE_NAME}/$BASE_BRANCH" "pr-$PR_NUM")
+          if ! MERGE_BASE=$(git merge-base "${REMOTE_NAME}/$BASE_BRANCH" "pr-$PR_NUM" 2>/dev/null); then
+            # Deepen if merge-base not found in shallow history
+            git fetch --deepen=200 "${REMOTE_NAME}" "$BASE_BRANCH" "pull/$PR_NUM/head:pr-$PR_NUM"
+            MERGE_BASE=$(git merge-base "${REMOTE_NAME}/$BASE_BRANCH" "pr-$PR_NUM")
+          fi
           git diff "$MERGE_BASE" "pr-$PR_NUM" > full_diff.diff
 
           # Derive file list from the diff (avoids a second API call)
