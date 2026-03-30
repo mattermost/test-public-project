@@ -29,7 +29,7 @@ jobs:
       id-token: write
     uses: mattermost/mattermost-test-automation-toolkit/.github/workflows/pr-test-analysis.yml@SEC-9968_reusable-pr-test-analysis
     with:
-      pr_number: ${{ inputs.pr_number }}
+      pr_number: ${{ fromJSON(inputs.pr_number) }}
       target_repo: ${{ format('mattermost/{0}', inputs.repo) }}
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
