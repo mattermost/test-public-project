@@ -11,6 +11,10 @@ on:
         options:
           - mattermost
           - mattermost-mobile
+          - desktop
+          - mattermost-plugin-calls
+          - mattermost-plugin-agents
+          - mattermost-plugin-boards
       pr_number:
         description: "PR number from the target repo"
         required: true
