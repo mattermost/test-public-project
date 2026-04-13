@@ -1,5 +1,5 @@
 ---
-name: PR Test Analysis (Hub)
+name: PR Test Analysis Override (Hub)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - mattermost
+          - enterprise
           - mattermost-mobile
           - desktop
           - mattermost-plugin-calls
@@ -19,23 +20,30 @@ on:
         description: "PR number from the target repo"
         required: true
         type: number
+      reason:
+        description: "Override reason"
+        required: true
+        type: string
 
 concurrency:
-  group: test-analyzer-hub-${{ inputs.repo }}-${{ inputs.pr_number }}
-  cancel-in-progress: true
+  group: test-analyzer-override-${{ inputs.repo }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
 
 jobs:
-  analyze:
+  override:
     permissions:
-      contents: read
-      pull-requests: write
       statuses: write
-      id-token: write
-    uses: mattermost/mattermost-test-automation-toolkit/.github/workflows/pr-test-analysis.yml@SEC-9968_reusable-pr-test-analysis
+      pull-requests: read
+      contents: read
+      issues: write
+    # Ideally pin to a full commit SHA for stability; using @main for fast iteration during development.
+    uses: mattermost/mattermost-test-automation-toolkit/.github/workflows/pr-test-analysis-override.yml@main
     with:
       pr_number: ${{ fromJSON(inputs.pr_number) }}
       target_repo: ${{ format('mattermost/{0}', inputs.repo) }}
+      reason: ${{ inputs.reason }}
+      comment_id: 0 # No comment to react to in dispatch mode; reaction step fails silently
+      sender: ${{ github.actor }}
     secrets:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       WEBHOOK_URL: ${{ secrets.WEBHOOK_URL_TEST_PR_ANALYSIS_HUB }}
