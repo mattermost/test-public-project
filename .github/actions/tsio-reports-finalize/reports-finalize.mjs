@@ -51,7 +51,14 @@ try {
 }
 if (status) console.log(JSON.stringify(status, null, 2));
 
-const repo = encodeURIComponent(IDENTITY.repository);
+// Dashboard URLs use only the trailing segment of the repository slug
+// ("owner/repo" → "repo") to match the convention surfaced by the
+// /reports/consolidated and /reports/grouped endpoints. Mirroring the same
+// path shape used elsewhere in the UI keeps deep links consistent and
+// browsable.
+const repoSlug = IDENTITY.repository || '';
+const repoTrailing = repoSlug.split('/').pop() || repoSlug;
+const repo = encodeURIComponent(repoTrailing);
 const branch = encodeURIComponent(IDENTITY.branch || 'main');
 const shortSha = (IDENTITY.commit_sha || '').slice(0, 7);
 const name = encodeURIComponent(IDENTITY.name);

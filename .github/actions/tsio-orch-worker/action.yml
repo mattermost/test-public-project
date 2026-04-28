@@ -33,10 +33,10 @@ inputs:
     description: >
       Prefix used to render the calling matrix job's name. The action
       resolves this entry's runtime gh_job_id by looking up
-      "<gh-job-name-base>-<worker-index>" in the run's jobs list, so the
-      caller MUST set `name: <gh-job-name-base>-${{ matrix.worker_index }}`
-      on its matrix job. The unsuffixed value is what gets sent to the
-      orchestrator as `gh_job_name`.
+      "<base>-<worker-index>" in the run's jobs list, so the caller MUST set
+      its job name accordingly (e.g. name with a matrix-suffix expression).
+      The unsuffixed value is what gets sent to the orchestrator as
+      gh_job_name.
     required: false
     default: "orch-worker"
   node-version:
