@@ -1,0 +1,54 @@
+name: "TSIO orchestration: finalize report group"
+description: >
+  POST /api/v1/reports/complete (idempotent on composite identity), fetch
+  /api/v1/orchestration/status, and write a job summary to $GITHUB_STEP_SUMMARY.
+  Exits non-zero when any unit ended in completed_fail or the run did not
+  reach `completed`.
+
+inputs:
+  orch-url:
+    description: "TSIO base URL"
+    required: true
+  oidc-audience:
+    description: "OIDC audience claim the orchestrator expects"
+    required: false
+    default: "mattermost-test-system-io"
+  identity:
+    description: "Composite identity JSON (same payload the begin action received)"
+    required: true
+  fail-on-test-failures:
+    description: "When true (default), exit non-zero if any unit ended in completed_fail"
+    required: false
+    default: "true"
+  node-version:
+    description: "Node version for the finalize script"
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      with:
+        node-version: ${{ inputs.node-version }}
+    - id: oidc
+      shell: bash
+      env:
+        AUD: ${{ inputs.oidc-audience }}
+      run: |
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "ERROR: GitHub Actions OIDC env vars missing — caller must grant 'permissions: id-token: write'." >&2
+          exit 1
+        fi
+        TOKEN=$(curl -fsSL \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUD}" | jq -r '.value')
+        echo "::add-mask::${TOKEN}"
+        echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+    - shell: bash
+      env:
+        ORCH_URL: ${{ inputs.orch-url }}
+        TSIO_BEARER: ${{ steps.oidc.outputs.token }}
+        IDENTITY: ${{ inputs.identity }}
+        FAIL_ON_TEST_FAILURES: ${{ inputs.fail-on-test-failures }}
+      run: node "${GITHUB_ACTION_PATH}/reports-finalize.mjs"

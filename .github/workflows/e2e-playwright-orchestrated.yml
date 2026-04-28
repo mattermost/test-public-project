@@ -1,0 +1,206 @@
+---
+# Orchestrated variant of mattermost/mattermost's
+# .github/workflows/e2e-tests-playwright-template.yml.
+#
+# Replaces:
+#   - Playwright `--shard=N/M` matrix → TSIO orchestration (begin/checkout/complete)
+#   - Failed-spec retest job          → built-in retest_on_fail (orchestrator re-leases)
+#   - S3 report sync                  → TSIO /api/v1/reports/* upload chain
+#
+# Authenticates to TSIO via GitHub Actions OIDC (no api_key secret required).
+# The staging orchestrator auto-seeds a `mattermost/* → uploader` policy on
+# every deploy via TSIO_BOOTSTRAP_OIDC_POLICIES, so any repo under the
+# mattermost/ org is authorized out of the box. Production seeds policies
+# manually via POST /api/v1/auth/oidc-policies (admin-key gated).
+#
+# Server license is sourced from the org-level secret
+# `MM_E2E_TEST_LICENSE_ONPREM_ENT` (matches the convention used by the upstream
+# mattermost/mattermost workflows). Only required for enterprise tests.
+
+name: E2E - Playwright (TSIO orchestrated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mattermost_ref:
+        description: "mattermost/mattermost ref to test (branch/tag/sha)"
+        type: string
+        default: master
+      server_image_tag:
+        description: "Server image tag (e.g. master or short SHA)"
+        type: string
+        default: master
+      server_edition:
+        description: "Server edition"
+        type: choice
+        options: [enterprise, fips, team]
+        default: enterprise
+      server_image_repo:
+        description: "Docker registry"
+        type: choice
+        options: [mattermostdevelopment, mattermost]
+        default: mattermostdevelopment
+      test_filter:
+        description: "Playwright filter args (e.g. --grep @smoke)"
+        type: string
+        default: ""
+      enabled_docker_services:
+        description: "Space-separated docker services for cloud-init"
+        type: string
+        default: "postgres inbucket"
+      workers:
+        description: "Number of parallel TSIO worker jobs"
+        type: number
+        default: 4
+      retest_on_fail:
+        description: "Re-dispatch failed dispatch units once"
+        type: boolean
+        default: true
+      orchestrator_url:
+        description: "TSIO base URL"
+        type: string
+        default: "https://staging-test-io.test.mattermost.com"
+      orchestrator_run_name:
+        description: "TSIO run name (stable across re-runs of the same workflow)"
+        type: string
+        default: "playwright-orchestrated-test"
+
+permissions:
+  contents: read
+  id-token: write   # needed to mint GitHub Actions OIDC tokens for TSIO auth
+
+env:
+  ORCH_URL: ${{ inputs.orchestrator_url }}
+  ORCH_NAME: ${{ inputs.orchestrator_run_name }}
+  MATTERMOST_REPO: mattermost/mattermost
+  SERVER_IMAGE: "${{ inputs.server_image_repo }}/${{ inputs.server_edition == 'fips' && 'mattermost-enterprise-fips-edition' || inputs.server_edition == 'team' && 'mattermost-team-edition' || 'mattermost-enterprise-edition' }}:${{ inputs.server_image_tag }}"
+
+jobs:
+  controller:
+    name: orch-controller
+    runs-on: ubuntu-24.04
+    outputs:
+      identity-json: ${{ steps.identity.outputs.identity-json }}
+      workers-matrix: ${{ steps.matrix.outputs.workers }}
+      mattermost_sha: ${{ steps.resolve-sha.outputs.sha }}
+    steps:
+      - name: ci/checkout-tsio-pipeline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ inputs.mattermost_ref }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/resolve-sha
+        id: resolve-sha
+        working-directory: mm
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: ci/identity
+        id: identity
+        env:
+          MM_SHA: ${{ steps.resolve-sha.outputs.sha }}
+        run: |
+          IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MATTERMOST_REPO }}" \
+            --arg sha "${MM_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${ORCH_NAME}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${{ inputs.mattermost_ref }}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch}')
+          echo "identity-json=${IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Identity: ${IDENTITY}"
+      - name: ci/matrix
+        id: matrix
+        run: |
+          echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
+      - name: ci/begin-orchestration
+        uses: ./.github/actions/tsio-orch-begin
+        with:
+          orch-url: ${{ env.ORCH_URL }}
+          mattermost-dir: ${{ github.workspace }}/mm
+          identity: ${{ steps.identity.outputs.identity-json }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers:
+    name: orch-worker-${{ matrix.worker_index }}
+    runs-on: ubuntu-24.04
+    needs: controller
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.controller.outputs.workers-matrix) }}
+    env:
+      IDENTITY: ${{ needs.controller.outputs.identity-json }}
+      SERVER: onprem
+      MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
+      ENABLED_DOCKER_SERVICES: ${{ inputs.enabled_docker_services }}
+      TEST: playwright
+      TEST_FILTER: ${{ inputs.test_filter }}
+      BRANCH: ${{ inputs.mattermost_ref }}
+      BUILD_ID: ${{ github.run_id }}
+      CI_BASE_URL: orchestrated-${{ matrix.worker_index }}
+    steps:
+      - name: ci/checkout-tsio-pipeline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+          cache: npm
+          cache-dependency-path: mm/e2e-tests/playwright/package-lock.json
+      - name: ci/get-webapp-node-modules
+        working-directory: mm/webapp
+        run: make node_modules
+      - name: ci/cloud-init
+        working-directory: mm/e2e-tests
+        run: make cloud-init
+      - name: ci/start-server
+        working-directory: mm/e2e-tests
+        run: make start-server
+      - name: ci/run-orchestrated-worker
+        uses: ./.github/actions/tsio-orch-worker
+        with:
+          orch-url: ${{ env.ORCH_URL }}
+          identity: ${{ needs.controller.outputs.identity-json }}
+          mattermost-dir: ${{ github.workspace }}/mm
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          worker-index: ${{ matrix.worker_index }}
+          gh-job-name-base: orch-worker
+      - name: ci/cloud-teardown
+        if: always()
+        working-directory: mm/e2e-tests
+        run: make cloud-teardown
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: orch-worker-${{ matrix.worker_index }}-debug
+          path: |
+            mm/e2e-tests/playwright/logs/
+            worker-artifacts/
+          retention-days: 5
+
+  report:
+    runs-on: ubuntu-24.04
+    needs: [controller, workers]
+    if: always()
+    env:
+      IDENTITY: ${{ needs.controller.outputs.identity-json }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/finalize-reports
+        uses: ./.github/actions/tsio-reports-finalize
+        with:
+          orch-url: ${{ env.ORCH_URL }}
+          identity: ${{ needs.controller.outputs.identity-json }}

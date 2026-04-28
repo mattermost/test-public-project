@@ -1,0 +1,97 @@
+name: "TSIO orchestration: drain queue + upload shard"
+description: >
+  Resolve this matrix entry's gh_job_id, drain the orchestration queue
+  (checkout → run-specs → complete), archive per-iteration Playwright JSON +
+  screenshots, and at queue-empty upload this worker's accumulated artifacts
+  as one shard report via /api/v1/reports/*. Caller is responsible for having
+  the mattermost stack up (make cloud-init + make start-server) before calling.
+
+inputs:
+  orch-url:
+    description: "TSIO base URL"
+    required: true
+  oidc-audience:
+    description: "OIDC audience claim the orchestrator expects"
+    required: false
+    default: "mattermost-test-system-io"
+  identity:
+    description: "Composite identity JSON (same payload the begin action received)"
+    required: true
+  mattermost-dir:
+    description: "Path to a checked-out mattermost/mattermost (e2e-tests stack already up)"
+    required: true
+  artifacts-root:
+    description: "Writable directory for per-iteration archived results"
+    required: true
+  github-token:
+    description: "Token with actions:read; used to look up gh_job_id"
+    required: true
+  worker-index:
+    description: "matrix.<worker_index> rendered into the matrix job name"
+    required: true
+  gh-job-name-base:
+    description: >
+      Prefix used to render the calling matrix job's name. The action
+      resolves this entry's runtime gh_job_id by looking up
+      "<gh-job-name-base>-<worker-index>" in the run's jobs list, so the
+      caller MUST set `name: <gh-job-name-base>-${{ matrix.worker_index }}`
+      on its matrix job. The unsuffixed value is what gets sent to the
+      orchestrator as `gh_job_name`.
+    required: false
+    default: "orch-worker"
+  node-version:
+    description: "Node version for the worker script"
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      with:
+        node-version: ${{ inputs.node-version }}
+    - id: resolve-job-id
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        EXPECTED_NAME: "${{ inputs.gh-job-name-base }}-${{ inputs.worker-index }}"
+      run: |
+        PAGE=1
+        JOB_ID=""
+        while [ -z "$JOB_ID" ]; do
+          RESPONSE=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100&page=${PAGE}")
+          JOB_ID=$(echo "$RESPONSE" | jq -r --arg n "$EXPECTED_NAME" '.jobs[] | select(.name == $n) | .id' | head -n1)
+          COUNT=$(echo "$RESPONSE" | jq -r '.jobs | length')
+          if [ "$COUNT" -eq 0 ] || [ -n "$JOB_ID" ]; then break; fi
+          PAGE=$((PAGE + 1))
+        done
+        if [ -z "$JOB_ID" ]; then
+          echo "could not resolve gh_job_id for '${EXPECTED_NAME}'" >&2
+          exit 1
+        fi
+        echo "id=${JOB_ID}" >> "$GITHUB_OUTPUT"
+        echo "Resolved gh_job_id=${JOB_ID}"
+    - id: oidc
+      shell: bash
+      env:
+        AUD: ${{ inputs.oidc-audience }}
+      run: |
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "ERROR: GitHub Actions OIDC env vars missing — caller must grant 'permissions: id-token: write'." >&2
+          exit 1
+        fi
+        TOKEN=$(curl -fsSL \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUD}" | jq -r '.value')
+        echo "::add-mask::${TOKEN}"
+        echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
+    - shell: bash
+      env:
+        ORCH_URL: ${{ inputs.orch-url }}
+        TSIO_BEARER: ${{ steps.oidc.outputs.token }}
+        IDENTITY: ${{ inputs.identity }}
+        MATTERMOST_DIR: ${{ inputs.mattermost-dir }}
+        ARTIFACTS_ROOT: ${{ inputs.artifacts-root }}
+        GH_JOB_ID: ${{ steps.resolve-job-id.outputs.id }}
+        GH_JOB_NAME: ${{ inputs.gh-job-name-base }}
+      run: node "${GITHUB_ACTION_PATH}/orch-worker.mjs"
