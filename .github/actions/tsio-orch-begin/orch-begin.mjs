@@ -28,7 +28,7 @@ if (specs.length === 0) {
   throw new Error(`no *.spec.ts files found under ${SPECS_DIR}`);
 }
 
-const dispatchUnits = specs.map((p) => ({ spec_paths: [p] }));
+const dispatchUnits = specs.map((p) => ({ spec_path: p }));
 console.log(`[controller] discovered ${dispatchUnits.length} spec file(s)`);
 
 const beginBody = {

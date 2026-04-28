@@ -23,7 +23,7 @@ inputs:
   node-version:
     description: "Node version for the finalize script"
     required: false
-    default: "20"
+    default: "24"
 
 runs:
   using: composite

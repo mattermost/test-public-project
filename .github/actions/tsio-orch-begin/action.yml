@@ -41,7 +41,7 @@ inputs:
   node-version:
     description: "Node version for the begin script"
     required: false
-    default: "20"
+    default: "24"
 
 runs:
   using: composite

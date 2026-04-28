@@ -43,7 +43,7 @@ on:
       test_filter:
         description: "Playwright filter args (e.g. --grep @smoke)"
         type: string
-        default: ""
+        default: "--grep @smoke"
       enabled_docker_services:
         description: "Space-separated docker services for cloud-init"
         type: string

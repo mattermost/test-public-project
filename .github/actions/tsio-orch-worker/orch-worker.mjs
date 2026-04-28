@@ -41,12 +41,14 @@ async function main() {
       batch_size: 1,
     });
 
-    if (checkout.status === 409 && checkout.body?.code === 'WORKER_HAS_ACTIVE_LEASE') {
+    // The TSIO Error envelope uses `{error, message}` — the `Code` Go field
+    // is JSON-tagged as "error". Match on `body.error`, not `body.code`.
+    if (checkout.status === 409 && checkout.body?.error === 'WORKER_HAS_ACTIVE_LEASE') {
       console.log('[worker] active lease still recorded; waiting');
       await sleep(2000);
       continue;
     }
-    if (checkout.status === 409 && checkout.body?.code === 'RUN_NOT_IN_PROGRESS') {
+    if (checkout.status === 409 && checkout.body?.error === 'RUN_NOT_IN_PROGRESS') {
       console.log('[worker] run no longer in_progress; exiting');
       break;
     }

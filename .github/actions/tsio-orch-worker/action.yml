@@ -42,7 +42,7 @@ inputs:
   node-version:
     description: "Node version for the worker script"
     required: false
-    default: "20"
+    default: "24"
 
 runs:
   using: composite
