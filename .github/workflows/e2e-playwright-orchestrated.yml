@@ -40,10 +40,6 @@ on:
         type: choice
         options: [mattermostdevelopment, mattermost]
         default: mattermostdevelopment
-      test_filter:
-        description: "Playwright filter args (e.g. --grep @smoke)"
-        type: string
-        default: "--grep @smoke"
       enabled_docker_services:
         description: "Space-separated docker services for cloud-init"
         type: string
@@ -116,6 +112,19 @@ jobs:
         id: matrix
         run: |
           echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+          cache: npm
+          cache-dependency-path: mm/e2e-tests/playwright/package-lock.json
+      # begin uses `playwright test --list` to discover only the spec files
+      # whose tests match (currently just the hardcoded `--grep-invert @visual`),
+      # so install + build playwright-lib here before the begin action runs.
+      - name: ci/prepare-playwright
+        working-directory: mm/e2e-tests/playwright
+        run: |
+          npm ci
+          npm run build
       - name: ci/begin-orchestration
         uses: ./.github/actions/tsio-orch-begin
         with:
@@ -139,7 +148,6 @@ jobs:
       MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
       ENABLED_DOCKER_SERVICES: ${{ inputs.enabled_docker_services }}
       TEST: playwright
-      TEST_FILTER: ${{ inputs.test_filter }}
       BRANCH: ${{ inputs.mattermost_ref }}
       BUILD_ID: ${{ github.run_id }}
       CI_BASE_URL: orchestrated-${{ matrix.worker_index }}

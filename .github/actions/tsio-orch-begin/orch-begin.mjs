@@ -3,8 +3,8 @@
 // then call POST /api/v1/orchestration/begin and POST /api/v1/reports/begin so
 // workers can drain the queue and the report-group exists for shard uploads.
 
-import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const ORCH_URL = required('ORCH_URL');
 const TSIO_BEARER = required('TSIO_BEARER');
@@ -17,15 +17,11 @@ const RUN_TIMEOUT_MS = intEnv('RUN_TIMEOUT_MS', 7_200_000);
 const PLAYWRIGHT_PROJECT = process.env.PLAYWRIGHT_PROJECT || 'chrome';
 
 const PLAYWRIGHT_DIR = path.join(MATTERMOST_DIR, 'e2e-tests', 'playwright');
-const SPECS_DIR = path.join(PLAYWRIGHT_DIR, 'specs');
 
-const specs = walkSpecs(SPECS_DIR)
-  .map((abs) => path.relative(PLAYWRIGHT_DIR, abs).split(path.sep).join('/'))
-  .filter((p) => !p.endsWith('test_setup.ts'))
-  .sort();
+const specs = discoverSpecs();
 
 if (specs.length === 0) {
-  throw new Error(`no *.spec.ts files found under ${SPECS_DIR}`);
+  throw new Error(`no specs found under ${PLAYWRIGHT_DIR}`);
 }
 
 const dispatchUnits = specs.map((p) => ({ spec_path: p }));
@@ -66,23 +62,35 @@ if (reportsRes.status !== 200) {
 const { report_id } = await reportsRes.json();
 console.log(`[controller] report group ready: ${report_id}`);
 
-function walkSpecs(root) {
-  const out = [];
-  function rec(dir) {
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name);
-      if (ent.isDirectory()) rec(full);
-      else if (ent.isFile() && /\.spec\.ts$/.test(ent.name)) out.push(full);
-    }
+// Ask Playwright which spec files actually have runnable tests for the
+// project (excluding @visual). Without this, begin would dispatch every
+// *.spec.ts on disk and workers without matching tests would exit with
+// "No tests found" — wasted runner time and noisy `completed_skipped`.
+function discoverSpecs() {
+  const args = ['playwright', 'test', '--list', '--reporter=json',
+    `--project=${PLAYWRIGHT_PROJECT}`, '--grep-invert', '@visual'];
+  const out = spawnSync('npx', args, {
+    cwd: PLAYWRIGHT_DIR,
+    encoding: 'utf8',
+    env: { ...process.env, PW_SNAPSHOT_ENABLE: 'true' },
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (out.status !== 0) {
+    throw new Error(`playwright --list failed (status=${out.status}): ${out.stderr || out.stdout}`);
   }
-  rec(root);
-  return out;
+  let json;
+  try {
+    json = JSON.parse(out.stdout);
+  } catch (e) {
+    throw new Error(`failed to parse playwright --list JSON: ${e.message}\nstdout head: ${out.stdout.slice(0, 1000)}`);
+  }
+  const files = new Set();
+  function visit(suite) {
+    if (suite.file) files.add(suite.file);
+    for (const sub of suite.suites || []) visit(sub);
+  }
+  for (const s of json.suites || []) visit(s);
+  return [...files].filter((p) => !p.endsWith('test_setup.ts')).sort();
 }
 
 function identityForReports() {

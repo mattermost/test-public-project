@@ -109,11 +109,7 @@ async function runUnit(specPaths) {
 
   // ci/prepare-playwright runs `npm ci` + `npm run build` once per worker
   // job; the per-spec loop just dispatches Playwright directly.
-  const args = ['playwright', 'test', '--project=chrome', '--grep-invert', '@visual'];
-  if (process.env.TEST_FILTER) {
-    args.push(...process.env.TEST_FILTER.split(/\s+/).filter(Boolean));
-  }
-  args.push(...specPaths);
+  const args = ['playwright', 'test', '--project=chrome', '--grep-invert', '@visual', ...specPaths];
   const startedAt = Date.now();
   const child = spawnSync('npx', args, {
     cwd: PLAYWRIGHT_DIR,
