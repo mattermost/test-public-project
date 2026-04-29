@@ -13,7 +13,7 @@ const COMPOSITE_IDENTITY = JSON.parse(required('COMPOSITE_IDENTITY'));
 const RETEST_ON_FAIL = process.env.RETEST_ON_FAIL === 'true';
 const RETEST_BUDGET = intEnv('RETEST_BUDGET', 1);
 const LEASE_TIMEOUT_MS = intEnv('LEASE_TIMEOUT_MS', 600_000);
-const RUN_TIMEOUT_MS = intEnv('RUN_TIMEOUT_MS', 7_200_000);
+const IDLE_TIMEOUT_MS = intEnv('IDLE_TIMEOUT_MS', 600_000);
 const PLAYWRIGHT_PROJECT = process.env.PLAYWRIGHT_PROJECT || 'chrome';
 
 const PLAYWRIGHT_DIR = path.join(MATTERMOST_DIR, 'e2e-tests', 'playwright');
@@ -32,7 +32,7 @@ const beginBody = {
   framework: 'playwright',
   playwright_project: PLAYWRIGHT_PROJECT,
   lease_timeout_ms: LEASE_TIMEOUT_MS,
-  run_timeout_ms: RUN_TIMEOUT_MS,
+  idle_timeout_ms: IDLE_TIMEOUT_MS,
   retest_on_fail: RETEST_ON_FAIL,
   retest_budget: RETEST_BUDGET,
   dispatch_units: dispatchUnits,

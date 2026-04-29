@@ -188,6 +188,12 @@ jobs:
         if: always()
         working-directory: mm/e2e-tests
         run: make cloud-teardown
+      # Always uploaded, even when the worker exits non-zero, so a 401 on
+      # /complete or /reports/* doesn't lose the per-iteration Playwright
+      # JSON + screenshots. `worker-artifacts/<gh_job_id>/iter-N/` holds
+      # archived copies the worker made after each spec; the live
+      # `playwright/results/` catches the in-flight iteration that may not
+      # have been archived yet if the runner died mid-spec.
       - name: ci/upload-debug-artifacts
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -195,8 +201,10 @@ jobs:
           name: orch-worker-${{ matrix.worker_index }}-debug
           path: |
             mm/e2e-tests/playwright/logs/
+            mm/e2e-tests/playwright/results/
             worker-artifacts/
           retention-days: 5
+          if-no-files-found: ignore
 
   report:
     runs-on: ubuntu-24.04

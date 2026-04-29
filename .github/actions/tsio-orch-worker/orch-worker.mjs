@@ -327,7 +327,7 @@ async function uploadShard() {
 }
 
 async function uploadMultipart(urlPath, parts, defaultType) {
-  const res = await fetchWithRetry(async () => {
+  const res = await fetchWithAuthRetry(async () => {
     // Rebuild the FormData on each retry — a Blob/FormData body can't be
     // safely replayed once consumed by the first fetch attempt.
     const form = new FormData();
@@ -398,7 +398,7 @@ function identityForReports() {
 }
 
 async function postJSON(urlPath, body) {
-  const res = await fetchWithRetry(() => {
+  const res = await fetchWithAuthRetry(() => {
     return getBearer().then((bearer) => fetch(`${TEST_SYSTEM_IO_URL}${urlPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
@@ -415,6 +415,23 @@ async function postJSON(urlPath, body) {
     }
   }
   return { status: res.status, body: parsed };
+}
+
+// Wrap fetchWithRetry with one extra attempt on HTTP 401: invalidate the
+// cached OIDC bearer and retry the call. Survives transient OIDC
+// re-verification failures (clock skew, key-cache miss server-side, a
+// token that just crossed an internal validity boundary). After one
+// 401-retry, subsequent 401s are returned to the caller — a persistent
+// auth failure indicates a real config problem, not a transient blip.
+async function fetchWithAuthRetry(makeRequest) {
+  let res = await fetchWithRetry(makeRequest);
+  if (res.status === 401) {
+    console.log('[worker] 401 — invalidating cached OIDC token and retrying once');
+    cachedToken = null;
+    cachedTokenMintedAt = 0;
+    res = await fetchWithRetry(makeRequest);
+  }
+  return res;
 }
 
 // Retry transient network failures (idle keep-alive sockets closed by the

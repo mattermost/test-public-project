@@ -30,10 +30,14 @@ inputs:
     description: "Per-lease deadline; orchestrator returns the unit to the queue if not completed in time"
     required: false
     default: "600000"
-  run-timeout-ms:
-    description: "Run-level deadline"
+  idle-timeout-ms:
+    description: >
+      Run-level inactivity window. The orchestrator marks the run
+      `timed_out` when no checkout / complete activity has happened on it
+      for this many milliseconds. Every successful activity resets the
+      timer.
     required: false
-    default: "7200000"
+    default: "600000"
   playwright-project:
     description: "Recorded on the run for UI display only"
     required: false
@@ -72,6 +76,6 @@ runs:
         RETEST_ON_FAIL: ${{ inputs.retest-on-fail }}
         RETEST_BUDGET: ${{ inputs.retest-budget }}
         LEASE_TIMEOUT_MS: ${{ inputs.lease-timeout-ms }}
-        RUN_TIMEOUT_MS: ${{ inputs.run-timeout-ms }}
+        IDLE_TIMEOUT_MS: ${{ inputs.idle-timeout-ms }}
         PLAYWRIGHT_PROJECT: ${{ inputs.playwright-project }}
       run: node "${GITHUB_ACTION_PATH}/orch-begin.mjs"
