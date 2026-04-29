@@ -12,12 +12,19 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const ORCH_URL = required('ORCH_URL');
-const TSIO_BEARER = required('TSIO_BEARER');
+const OIDC_AUDIENCE = required('OIDC_AUDIENCE');
 const IDENTITY = JSON.parse(required('IDENTITY'));
 const GH_JOB_ID = required('GH_JOB_ID');
 const GH_JOB_NAME = process.env.GH_JOB_NAME || 'orch-worker';
 const MATTERMOST_DIR = required('MATTERMOST_DIR');
 const ARTIFACTS_ROOT = required('ARTIFACTS_ROOT');
+
+// GH Actions OIDC tokens have a short TTL (~10 min). Long-running workers must
+// mint on demand instead of caching one upfront — otherwise the bearer expires
+// mid-loop and /complete returns 401 after the last spec.
+const TOKEN_REFRESH_AGE_MS = 5 * 60 * 1000;
+let cachedToken = null;
+let cachedTokenMintedAt = 0;
 
 const E2E_DIR = path.join(MATTERMOST_DIR, 'e2e-tests');
 const PLAYWRIGHT_DIR = path.join(E2E_DIR, 'playwright');
@@ -284,9 +291,10 @@ async function uploadMultipart(urlPath, parts, defaultType) {
     const type = p.contentType || defaultType || 'application/octet-stream';
     form.append('files', new Blob([buf], { type }), p.relPath);
   }
+  const bearer = await getBearer();
   const res = await fetch(`${ORCH_URL}${urlPath}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${TSIO_BEARER}` },
+    headers: { Authorization: `Bearer ${bearer}` },
     body: form,
   });
   if (res.status !== 200) {
@@ -344,9 +352,10 @@ function identityForReports() {
 }
 
 async function postJSON(urlPath, body) {
+  const bearer = await getBearer();
   const res = await fetch(`${ORCH_URL}${urlPath}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TSIO_BEARER}` },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -359,6 +368,30 @@ async function postJSON(urlPath, body) {
     }
   }
   return { status: res.status, body: parsed };
+}
+
+async function getBearer() {
+  if (cachedToken && Date.now() - cachedTokenMintedAt < TOKEN_REFRESH_AGE_MS) {
+    return cachedToken;
+  }
+  const reqToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+  const reqURL = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+  if (!reqToken || !reqURL) {
+    throw new Error("OIDC env missing — caller must grant 'permissions: id-token: write'");
+  }
+  const u = new URL(reqURL);
+  u.searchParams.set('audience', OIDC_AUDIENCE);
+  const res = await fetch(u, { headers: { Authorization: `bearer ${reqToken}` } });
+  if (!res.ok) {
+    throw new Error(`OIDC mint failed: ${res.status} ${await res.text().catch(() => '')}`);
+  }
+  const value = (await res.json())?.value;
+  if (!value) throw new Error('OIDC mint returned empty value');
+  // Tell the runner to mask this token in subsequent log output.
+  process.stdout.write(`::add-mask::${value}\n`);
+  cachedToken = value;
+  cachedTokenMintedAt = Date.now();
+  return value;
 }
 
 function sleep(ms) {
