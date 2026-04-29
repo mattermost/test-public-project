@@ -177,12 +177,16 @@ jobs:
         run: make start-server
       # Install + build playwright-lib once per worker job so the per-spec
       # loop can dispatch `npx playwright test` without paying npm ci/build
-      # overhead on every iteration.
+      # overhead on every iteration. Also run the `setup` project once here
+      # so per-spec runs can pass `--no-deps` and skip the ~700ms of
+      # plugin-load + server-deployment checks that would otherwise repeat
+      # before every spec.
       - name: ci/prepare-playwright
         working-directory: mm/e2e-tests/playwright
         run: |
           npm ci
           npm run build
+          npx playwright test --project=setup
       - name: ci/run-orchestrated-worker
         uses: ./.github/actions/tsio-orch-worker
         with:

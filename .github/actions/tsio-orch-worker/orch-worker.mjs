@@ -109,7 +109,13 @@ async function runUnit(specPaths) {
 
   // ci/prepare-playwright runs `npm ci` + `npm run build` once per worker
   // job; the per-spec loop just dispatches Playwright directly.
-  const args = ['playwright', 'test', '--project=chrome', '--grep-invert', '@visual', ...specPaths];
+  // --no-deps skips the `setup` project that `chrome` declares as a
+  // dependency. ci/prepare-playwright already ran setup once at job start,
+  // and its side effects (plugins loaded, server deployed) persist on the
+  // long-running mattermost server, so every spec's worth of setup re-runs
+  // is wasted time.
+  const args = ['playwright', 'test', '--project=chrome', '--grep-invert', '@visual',
+    '--no-deps', ...specPaths];
   const startedAt = Date.now();
   const child = spawnSync('npx', args, {
     cwd: PLAYWRIGHT_DIR,
