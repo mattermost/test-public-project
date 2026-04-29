@@ -47,7 +47,7 @@ on:
       workers:
         description: "Number of parallel Test System IO worker jobs"
         type: number
-        default: 4
+        default: 8
       retest_on_fail:
         description: "Re-dispatch failed dispatch units once"
         type: boolean
