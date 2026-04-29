@@ -27,11 +27,17 @@ const completeRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/reports/complete`,
   body: JSON.stringify(reportsIdent),
 });
 if (completeRes.status !== 200) {
-  const t = await completeRes.text();
+  // Loud failure — the server-side per-report auto-finalize is the safety
+  // net for stuck `processing` rows, but a missed /reports/complete still
+  // leaves the report_group at `in_progress` until every shard's upload
+  // pipeline lands. Surface the error in CI so the next investigation
+  // doesn't have to dig through staging API to discover that this step
+  // silently dropped the ball.
+  const t = await completeRes.text().catch(() => '');
   console.error(`reports/complete returned ${completeRes.status}: ${t}`);
-} else {
-  console.log('[finalize] reports/complete OK');
+  process.exit(1);
 }
+console.log('[finalize] reports/complete OK');
 
 const params = new URLSearchParams({
   repository: COMPOSITE_IDENTITY.repository,

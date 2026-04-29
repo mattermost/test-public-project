@@ -28,13 +28,13 @@ inputs:
     required: true
   gh-job-name:
     description: >
-      Rendered job name of the calling matrix entry, e.g.
-      `orch-worker-3`. The action looks this up in the run's jobs list to
-      resolve gh_job_id, and sends the same value to the orchestrator and
-      uploader as gh_job_name so every worker in the matrix has a unique,
-      human-readable identity. The caller MUST keep this in sync with
-      `name:` on the workers job (e.g. `name: orch-worker-${{ matrix.worker_index }}`
-      and `gh-job-name: orch-worker-${{ matrix.worker_index }}`).
+      Rendered job name of the calling matrix entry (e.g. orch-worker-3).
+      The action looks this up in the run's jobs list to resolve
+      gh_job_id, and sends the same value to the orchestrator and
+      uploader as gh_job_name so every worker in the matrix has a
+      unique, human-readable identity. The caller MUST keep this in sync
+      with the workers job's name field — the matrix-suffix template
+      passed here must match the matrix-suffix template on `name:`.
     required: true
   node-version:
     description: "Node version for the worker script"
