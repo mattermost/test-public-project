@@ -1,7 +1,7 @@
 name: "TSIO orchestration: drain queue + upload shard"
 description: >
   Resolve this matrix entry's gh_job_id, drain the orchestration queue
-  (checkout → run-specs → complete), archive per-iteration Playwright JSON +
+  (checkout → playwright → complete), archive per-iteration Playwright JSON +
   screenshots, and at queue-empty upload this worker's accumulated artifacts
   as one shard report via /api/v1/reports/*. Caller is responsible for having
   the mattermost stack up (make cloud-init + make start-server) before calling.

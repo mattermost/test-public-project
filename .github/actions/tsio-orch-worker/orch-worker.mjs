@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Drain the orchestration queue, run mattermost's `make run-specs SPEC_FILES=...`
-// per leased spec, archive the per-iteration Playwright JSON + screenshots, and
-// at queue-empty upload the worker's accumulated artifacts as ONE shard report.
+// Drain the orchestration queue, run Playwright per leased spec, archive the
+// per-iteration JSON + screenshots, and at queue-empty upload the worker's
+// accumulated artifacts as ONE shard report.
 //
 // Identity comes from $IDENTITY (composite) + $GH_JOB_ID/$GH_JOB_NAME (worker).
 // The orchestrator looks up the worker's lease by (run, gh_job_id) so workers
@@ -26,8 +26,7 @@ const TOKEN_REFRESH_AGE_MS = 5 * 60 * 1000;
 let cachedToken = null;
 let cachedTokenMintedAt = 0;
 
-const E2E_DIR = path.join(MATTERMOST_DIR, 'e2e-tests');
-const PLAYWRIGHT_DIR = path.join(E2E_DIR, 'playwright');
+const PLAYWRIGHT_DIR = path.join(MATTERMOST_DIR, 'e2e-tests', 'playwright');
 const RESULTS_DIR = path.join(PLAYWRIGHT_DIR, 'results');
 
 const WORKER_ARTIFACTS = path.join(ARTIFACTS_ROOT, GH_JOB_ID);
@@ -108,22 +107,25 @@ async function runUnit(specPaths) {
   const iterDir = path.join(WORKER_ARTIFACTS, `iter-${iterationSeq++}`);
   fs.mkdirSync(iterDir, { recursive: true });
 
-  // mattermost's run-specs takes a comma-separated list and runs Playwright
-  // inside the `playwright` docker container. Spec paths are relative to
-  // e2e-tests/playwright (e.g. "specs/channels/foo.spec.ts").
-  const specArg = specPaths.join(',');
+  // ci/prepare-playwright runs `npm ci` + `npm run build` once per worker
+  // job; the per-spec loop just dispatches Playwright directly.
+  const args = ['playwright', 'test', '--project=chrome', '--grep-invert', '@visual'];
+  if (process.env.TEST_FILTER) {
+    args.push(...process.env.TEST_FILTER.split(/\s+/).filter(Boolean));
+  }
+  args.push(...specPaths);
   const startedAt = Date.now();
-  const child = spawnSync('make', ['run-specs'], {
-    cwd: E2E_DIR,
-    env: { ...process.env, SPEC_FILES: specArg },
+  const child = spawnSync('npx', args, {
+    cwd: PLAYWRIGHT_DIR,
+    env: { ...process.env, PW_SNAPSHOT_ENABLE: 'true' },
     stdio: 'inherit',
   });
   const durationMs = Date.now() - startedAt;
-  console.log(`[worker] make run-specs exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
+  console.log(`[worker] playwright exit ${child.status} in ${Math.round(durationMs / 1000)}s`);
 
   // Copy the raw results dir before the next iteration overwrites it.
   if (!fs.existsSync(RESULTS_DIR)) {
-    throw new Error(`results dir missing after run-specs: ${RESULTS_DIR}`);
+    throw new Error(`results dir missing after playwright run: ${RESULTS_DIR}`);
   }
   const archivedResults = path.join(iterDir, 'results');
   fs.cpSync(RESULTS_DIR, archivedResults, { recursive: true });
@@ -155,7 +157,7 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
     return { spec_path: specPath, status: 'skipped', actual_duration_ms: 0, test_cases: [] };
   }
 
-  const ranks = { passed: 0, skipped: 1, flaky: 2, interrupted: 3, timedOut: 4, failed: 5 };
+  const ranks = { skipped: 0, passed: 1, flaky: 2, interrupted: 3, timedOut: 4, failed: 5 };
   const cases = [];
   let totalMs = 0;
   let worst = 'skipped';
