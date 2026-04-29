@@ -182,8 +182,7 @@ jobs:
           mattermost-dir: ${{ github.workspace }}/mm
           artifacts-root: ${{ github.workspace }}/worker-artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          worker-index: ${{ matrix.worker_index }}
-          gh-job-name-base: orch-worker
+          gh-job-name: orch-worker-${{ matrix.worker_index }}
       - name: ci/cloud-teardown
         if: always()
         working-directory: mm/e2e-tests

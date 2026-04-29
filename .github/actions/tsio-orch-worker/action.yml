@@ -26,19 +26,16 @@ inputs:
   github-token:
     description: "Token with actions:read; used to look up gh_job_id"
     required: true
-  worker-index:
-    description: "matrix.<worker_index> rendered into the matrix job name"
-    required: true
-  gh-job-name-base:
+  gh-job-name:
     description: >
-      Prefix used to render the calling matrix job's name. The action
-      resolves this entry's runtime gh_job_id by looking up
-      "<base>-<worker-index>" in the run's jobs list, so the caller MUST set
-      its job name accordingly (e.g. name with a matrix-suffix expression).
-      The unsuffixed value is what gets sent to the orchestrator as
-      gh_job_name.
-    required: false
-    default: "orch-worker"
+      Rendered job name of the calling matrix entry, e.g.
+      `orch-worker-3`. The action looks this up in the run's jobs list to
+      resolve gh_job_id, and sends the same value to the orchestrator and
+      uploader as gh_job_name so every worker in the matrix has a unique,
+      human-readable identity. The caller MUST keep this in sync with
+      `name:` on the workers job (e.g. `name: orch-worker-${{ matrix.worker_index }}`
+      and `gh-job-name: orch-worker-${{ matrix.worker_index }}`).
+    required: true
   node-version:
     description: "Node version for the worker script"
     required: false
@@ -54,7 +51,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-        EXPECTED_NAME: "${{ inputs.gh-job-name-base }}-${{ inputs.worker-index }}"
+        EXPECTED_NAME: "${{ inputs.gh-job-name }}"
       run: |
         PAGE=1
         JOB_ID=""
@@ -79,5 +76,5 @@ runs:
         MATTERMOST_DIR: ${{ inputs.mattermost-dir }}
         ARTIFACTS_ROOT: ${{ inputs.artifacts-root }}
         GH_JOB_ID: ${{ steps.resolve-job-id.outputs.id }}
-        GH_JOB_NAME: ${{ inputs.gh-job-name-base }}
+        GH_JOB_NAME: ${{ inputs.gh-job-name }}
       run: node "${GITHUB_ACTION_PATH}/orch-worker.mjs"

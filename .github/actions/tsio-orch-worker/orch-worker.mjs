@@ -87,6 +87,17 @@ async function drain() {
     }
 
     if (checkout.body.queue_empty) {
+      const retryAfterMs = Number(checkout.body.retry_after_ms);
+      if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+        // Other workers still in flight or retest pool non-empty — stay
+        // alive so we can pick up retest units the moment another worker
+        // reports a fresh-pass result. Sleeping clients add no extra load
+        // on the orchestrator (single read query) and let the retest pool
+        // fan out across workers instead of serializing on the slowest.
+        console.log(`[worker] queue empty; sleeping ${retryAfterMs}ms before re-polling`);
+        await sleep(retryAfterMs);
+        continue;
+      }
       console.log(`[worker] queue empty after ${leasesHeld} unit(s); exiting cleanly`);
       break;
     }
