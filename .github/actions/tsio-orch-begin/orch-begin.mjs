@@ -3,8 +3,8 @@
 // then call POST /api/v1/orchestration/begin and POST /api/v1/reports/begin so
 // workers can drain the queue and the report-group exists for shard uploads.
 
+import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 const ORCH_URL = required('ORCH_URL');
 const TSIO_BEARER = required('TSIO_BEARER');
@@ -62,35 +62,35 @@ if (reportsRes.status !== 200) {
 const { report_id } = await reportsRes.json();
 console.log(`[controller] report group ready: ${report_id}`);
 
-// Ask Playwright which spec files actually have runnable tests for the
-// project (excluding @visual). Without this, begin would dispatch every
-// *.spec.ts on disk and workers without matching tests would exit with
-// "No tests found" — wasted runner time and noisy `completed_skipped`.
+// Walk e2e-tests/playwright/specs/ for *.spec.ts. Excludes:
+//   - specs/visual/**          — covered by the worker's `--grep-invert @visual`
+//   - specs/test_setup.ts      — runs as a Playwright project dependency, not
+//                                 as a dispatched unit
+// Discovery deliberately skips `playwright test --list` so the controller
+// doesn't need to install + build playwright-lib (which would require the
+// whole webapp workspace to compile).
 function discoverSpecs() {
-  const args = ['playwright', 'test', '--list', '--reporter=json',
-    `--project=${PLAYWRIGHT_PROJECT}`, '--grep-invert', '@visual'];
-  const out = spawnSync('npx', args, {
-    cwd: PLAYWRIGHT_DIR,
-    encoding: 'utf8',
-    env: { ...process.env, PW_SNAPSHOT_ENABLE: 'true' },
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (out.status !== 0) {
-    throw new Error(`playwright --list failed (status=${out.status}): ${out.stderr || out.stdout}`);
+  const SPECS_DIR = path.join(PLAYWRIGHT_DIR, 'specs');
+  const out = [];
+  function rec(dir) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) rec(full);
+      else if (ent.isFile() && /\.spec\.ts$/.test(ent.name)) out.push(full);
+    }
   }
-  let json;
-  try {
-    json = JSON.parse(out.stdout);
-  } catch (e) {
-    throw new Error(`failed to parse playwright --list JSON: ${e.message}\nstdout head: ${out.stdout.slice(0, 1000)}`);
-  }
-  const files = new Set();
-  function visit(suite) {
-    if (suite.file) files.add(suite.file);
-    for (const sub of suite.suites || []) visit(sub);
-  }
-  for (const s of json.suites || []) visit(s);
-  return [...files].filter((p) => !p.endsWith('test_setup.ts')).sort();
+  rec(SPECS_DIR);
+  return out
+    .map((abs) => path.relative(PLAYWRIGHT_DIR, abs).split(path.sep).join('/'))
+    .filter((p) => !p.endsWith('test_setup.ts'))
+    .filter((p) => !p.startsWith('specs/visual/'))
+    .sort();
 }
 
 function identityForReports() {
