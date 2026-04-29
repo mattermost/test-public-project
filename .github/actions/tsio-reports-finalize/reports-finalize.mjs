@@ -6,8 +6,8 @@
 
 import fs from 'node:fs';
 
-const ORCH_URL = required('ORCH_URL');
-const TSIO_BEARER = required('TSIO_BEARER');
+const TEST_SYSTEM_IO_URL = required('TEST_SYSTEM_IO_URL');
+const TEST_SYSTEM_IO_BEARER = required('TEST_SYSTEM_IO_BEARER');
 const IDENTITY = JSON.parse(required('IDENTITY'));
 
 const reportsIdent = {
@@ -21,9 +21,9 @@ const reportsIdent = {
 };
 if (IDENTITY.gh_pr_number != null) reportsIdent.gh_pr_number = IDENTITY.gh_pr_number;
 
-const completeRes = await fetch(`${ORCH_URL}/api/v1/reports/complete`, {
+const completeRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/reports/complete`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TSIO_BEARER}` },
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_SYSTEM_IO_BEARER}` },
   body: JSON.stringify(reportsIdent),
 });
 if (completeRes.status !== 200) {
@@ -40,8 +40,8 @@ const params = new URLSearchParams({
   name: IDENTITY.name,
   gh_run_attempt: IDENTITY.gh_run_attempt,
 });
-const statusRes = await fetch(`${ORCH_URL}/api/v1/orchestration/status?${params.toString()}`, {
-  headers: { Authorization: `Bearer ${TSIO_BEARER}` },
+const statusRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/orchestration/status?${params.toString()}`, {
+  headers: { Authorization: `Bearer ${TEST_SYSTEM_IO_BEARER}` },
 });
 let status = null;
 try {
@@ -62,14 +62,14 @@ const repo = encodeURIComponent(repoTrailing);
 const branch = encodeURIComponent(IDENTITY.branch || 'main');
 const shortSha = (IDENTITY.commit_sha || '').slice(0, 7);
 const name = encodeURIComponent(IDENTITY.name);
-const reportURL = `${ORCH_URL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}`;
+const reportURL = `${TEST_SYSTEM_IO_URL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}`;
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 if (summaryPath) {
   const counts = (status && status.counts) || {};
   const total = (status && status.total_units) ?? '?';
   const lines = [
-    '## E2E Test Results — Playwright (TSIO orchestrated)',
+    '## E2E Test Results — Playwright (Test System IO orchestrated)',
     '',
     `**Run status:** \`${status?.status ?? 'unknown'}\``,
     '',

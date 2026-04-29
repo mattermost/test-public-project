@@ -6,8 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const ORCH_URL = required('ORCH_URL');
-const TSIO_BEARER = required('TSIO_BEARER');
+const TEST_SYSTEM_IO_URL = required('TEST_SYSTEM_IO_URL');
+const TEST_SYSTEM_IO_BEARER = required('TEST_SYSTEM_IO_BEARER');
 const MATTERMOST_DIR = required('MATTERMOST_DIR');
 const IDENTITY = JSON.parse(required('IDENTITY'));
 const RETEST_ON_FAIL = process.env.RETEST_ON_FAIL === 'true';
@@ -38,9 +38,9 @@ const beginBody = {
   dispatch_units: dispatchUnits,
 };
 
-const beginRes = await fetch(`${ORCH_URL}/api/v1/orchestration/begin`, {
+const beginRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/orchestration/begin`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TSIO_BEARER}` },
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_SYSTEM_IO_BEARER}` },
   body: JSON.stringify(beginBody),
 });
 if (beginRes.status !== 200 && beginRes.status !== 201) {
@@ -50,9 +50,9 @@ if (beginRes.status !== 200 && beginRes.status !== 201) {
 console.log(`[controller] orchestration begun (${beginRes.status})`);
 
 const reportsIdent = identityForReports();
-const reportsRes = await fetch(`${ORCH_URL}/api/v1/reports/begin`, {
+const reportsRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/reports/begin`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TSIO_BEARER}` },
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_SYSTEM_IO_BEARER}` },
   body: JSON.stringify(reportsIdent),
 });
 if (reportsRes.status !== 200) {

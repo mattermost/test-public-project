@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const ORCH_URL = required('ORCH_URL');
+const TEST_SYSTEM_IO_URL = required('TEST_SYSTEM_IO_URL');
 const OIDC_AUDIENCE = required('OIDC_AUDIENCE');
 const IDENTITY = JSON.parse(required('IDENTITY'));
 const GH_JOB_ID = required('GH_JOB_ID');
@@ -47,8 +47,8 @@ async function main() {
       batch_size: 1,
     });
 
-    // The TSIO Error envelope uses `{error, message}` — the `Code` Go field
-    // is JSON-tagged as "error". Match on `body.error`, not `body.code`.
+    // The Test System IO Error envelope uses `{error, message}` — the `Code`
+    // Go field is JSON-tagged as "error". Match on `body.error`, not `body.code`.
     if (checkout.status === 409 && checkout.body?.error === 'WORKER_HAS_ACTIVE_LEASE') {
       console.log('[worker] active lease still recorded; waiting');
       await sleep(2000);
@@ -148,13 +148,24 @@ async function runUnit(specPaths) {
 }
 
 // aggregateSpec walks the Playwright JSON reporter output and produces a
-// TSIO SpecResult for `specPath`. Status is the worst of any test attempt in
-// the spec's suite tree. test_cases mirrors columns on the TSIO test_cases
-// table, one row per test attempt (so retries surface as separate rows).
+// Test System IO SpecResult for `specPath`. Status is the worst of any test
+// attempt in the spec's suite tree. test_cases mirrors columns on the Test
+// System IO test_cases table, one row per test attempt (so retries surface
+// as separate rows).
 function aggregateSpec(json, specPath, fallbackDurationMs) {
-  const fileSuite = (json.suites || []).find(
-    (s) => s.file === specPath || s.title === specPath,
-  );
+  // The JSON reporter wraps file suites under a top-level project suite
+  // (e.g. { title: 'chrome', suites: [{ file: 'specs/...', ... }] }), so
+  // the matching suite for a spec_path is nested. Walk recursively and
+  // return the first suite whose `file` matches.
+  function findFileSuite(suites) {
+    for (const s of suites) {
+      if (s.file === specPath || s.title === specPath) return s;
+      const sub = findFileSuite(s.suites || []);
+      if (sub) return sub;
+    }
+    return null;
+  }
+  const fileSuite = findFileSuite(json.suites || []);
   if (!fileSuite) {
     return { spec_path: specPath, status: 'skipped', actual_duration_ms: 0, test_cases: [] };
   }
@@ -289,17 +300,21 @@ async function uploadShard() {
 }
 
 async function uploadMultipart(urlPath, parts, defaultType) {
-  const form = new FormData();
-  for (const p of parts) {
-    const buf = fs.readFileSync(p.absPath);
-    const type = p.contentType || defaultType || 'application/octet-stream';
-    form.append('files', new Blob([buf], { type }), p.relPath);
-  }
-  const bearer = await getBearer();
-  const res = await fetch(`${ORCH_URL}${urlPath}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${bearer}` },
-    body: form,
+  const res = await fetchWithRetry(async () => {
+    // Rebuild the FormData on each retry — a Blob/FormData body can't be
+    // safely replayed once consumed by the first fetch attempt.
+    const form = new FormData();
+    for (const p of parts) {
+      const buf = fs.readFileSync(p.absPath);
+      const type = p.contentType || defaultType || 'application/octet-stream';
+      form.append('files', new Blob([buf], { type }), p.relPath);
+    }
+    const bearer = await getBearer();
+    return fetch(`${TEST_SYSTEM_IO_URL}${urlPath}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${bearer}` },
+      body: form,
+    });
   });
   if (res.status !== 200) {
     const t = await res.text().catch(() => '');
@@ -356,11 +371,12 @@ function identityForReports() {
 }
 
 async function postJSON(urlPath, body) {
-  const bearer = await getBearer();
-  const res = await fetch(`${ORCH_URL}${urlPath}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
-    body: JSON.stringify(body),
+  const res = await fetchWithRetry(() => {
+    return getBearer().then((bearer) => fetch(`${TEST_SYSTEM_IO_URL}${urlPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${bearer}` },
+      body: JSON.stringify(body),
+    }));
   });
   const text = await res.text();
   let parsed = null;
@@ -372,6 +388,36 @@ async function postJSON(urlPath, body) {
     }
   }
   return { status: res.status, body: parsed };
+}
+
+// Retry transient network failures (idle keep-alive sockets closed by the
+// AWS LB during a long playwright run, brief DNS hiccups, etc.). Only
+// retries on connection-level errors thrown by fetch — HTTP non-2xx
+// responses are returned to the caller verbatim so business-logic errors
+// (e.g. RUN_NOT_IN_PROGRESS) aren't silently masked.
+async function fetchWithRetry(makeRequest, attempts = 4) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await makeRequest();
+    } catch (err) {
+      lastErr = err;
+      const cause = err?.cause;
+      const code = cause?.code || err?.code;
+      const retryable =
+        err?.name === 'TypeError' /* node fetch wraps net errors here */ ||
+        code === 'UND_ERR_SOCKET' ||
+        code === 'ECONNRESET' ||
+        code === 'ETIMEDOUT' ||
+        code === 'EAI_AGAIN' ||
+        code === 'ENOTFOUND';
+      if (!retryable || i === attempts - 1) throw err;
+      const delayMs = 500 * 2 ** i;
+      console.log(`[worker] fetch transient failure (${code || err.name}); retrying in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastErr;
 }
 
 async function getBearer() {

@@ -1,4 +1,4 @@
-name: "TSIO orchestration: drain queue + upload shard"
+name: "Test System IO orchestration: drain queue + upload shard"
 description: >
   Resolve this matrix entry's gh_job_id, drain the orchestration queue
   (checkout → playwright → complete), archive per-iteration Playwright JSON +
@@ -7,8 +7,8 @@ description: >
   the mattermost stack up (make cloud-init + make start-server) before calling.
 
 inputs:
-  orch-url:
-    description: "TSIO base URL"
+  test-system-io-url:
+    description: "Test System IO base URL"
     required: true
   oidc-audience:
     description: "OIDC audience claim the orchestrator expects"
@@ -73,7 +73,7 @@ runs:
         echo "Resolved gh_job_id=${JOB_ID}"
     - shell: bash
       env:
-        ORCH_URL: ${{ inputs.orch-url }}
+        TEST_SYSTEM_IO_URL: ${{ inputs.test-system-io-url }}
         OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
         IDENTITY: ${{ inputs.identity }}
         MATTERMOST_DIR: ${{ inputs.mattermost-dir }}

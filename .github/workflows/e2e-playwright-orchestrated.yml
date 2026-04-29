@@ -3,11 +3,11 @@
 # .github/workflows/e2e-tests-playwright-template.yml.
 #
 # Replaces:
-#   - Playwright `--shard=N/M` matrix → TSIO orchestration (begin/checkout/complete)
+#   - Playwright `--shard=N/M` matrix → Test System IO orchestration (begin/checkout/complete)
 #   - Failed-spec retest job          → built-in retest_on_fail (orchestrator re-leases)
-#   - S3 report sync                  → TSIO /api/v1/reports/* upload chain
+#   - S3 report sync                  → Test System IO /api/v1/reports/* upload chain
 #
-# Authenticates to TSIO via GitHub Actions OIDC (no api_key secret required).
+# Authenticates to Test System IO via GitHub Actions OIDC (no api_key secret required).
 # The staging orchestrator auto-seeds a `mattermost/* → uploader` policy on
 # every deploy via TSIO_BOOTSTRAP_OIDC_POLICIES, so any repo under the
 # mattermost/ org is authorized out of the box. Production seeds policies
@@ -17,7 +17,7 @@
 # `MM_E2E_TEST_LICENSE_ONPREM_ENT` (matches the convention used by the upstream
 # mattermost/mattermost workflows). Only required for enterprise tests.
 
-name: E2E - Playwright (TSIO orchestrated)
+name: E2E - Playwright (Test System IO orchestrated)
 
 on:
   workflow_dispatch:
@@ -45,29 +45,29 @@ on:
         type: string
         default: "postgres inbucket"
       workers:
-        description: "Number of parallel TSIO worker jobs"
+        description: "Number of parallel Test System IO worker jobs"
         type: number
         default: 4
       retest_on_fail:
         description: "Re-dispatch failed dispatch units once"
         type: boolean
         default: true
-      orchestrator_url:
-        description: "TSIO base URL"
+      test_system_io_url:
+        description: "Test System IO base URL"
         type: string
         default: "https://staging-test-io.test.mattermost.com"
-      orchestrator_run_name:
-        description: "TSIO run name (stable across re-runs of the same workflow)"
+      test_system_io_run_name:
+        description: "Test System IO run name (stable across re-runs of the same workflow)"
         type: string
         default: "playwright-orchestrated-test"
 
 permissions:
   contents: read
-  id-token: write   # needed to mint GitHub Actions OIDC tokens for TSIO auth
+  id-token: write   # needed to mint GitHub Actions OIDC tokens for Test System IO auth
 
 env:
-  ORCH_URL: ${{ inputs.orchestrator_url }}
-  ORCH_NAME: ${{ inputs.orchestrator_run_name }}
+  TEST_SYSTEM_IO_URL: ${{ inputs.test_system_io_url }}
+  TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
   MATTERMOST_REPO: mattermost/mattermost
   SERVER_IMAGE: "${{ inputs.server_image_repo }}/${{ inputs.server_edition == 'fips' && 'mattermost-enterprise-fips-edition' || inputs.server_edition == 'team' && 'mattermost-team-edition' || 'mattermost-enterprise-edition' }}:${{ inputs.server_image_tag }}"
 
@@ -102,7 +102,7 @@ jobs:
             --arg repo "${{ env.MATTERMOST_REPO }}" \
             --arg sha "${MM_SHA}" \
             --arg run_id "${GITHUB_RUN_ID}" \
-            --arg name "${ORCH_NAME}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}" \
             --arg attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg branch "${{ inputs.mattermost_ref }}" \
             '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch}')
@@ -115,7 +115,7 @@ jobs:
       - name: ci/begin-orchestration
         uses: ./.github/actions/tsio-orch-begin
         with:
-          orch-url: ${{ env.ORCH_URL }}
+          test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
           mattermost-dir: ${{ github.workspace }}/mm
           identity: ${{ steps.identity.outputs.identity-json }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
@@ -177,7 +177,7 @@ jobs:
       - name: ci/run-orchestrated-worker
         uses: ./.github/actions/tsio-orch-worker
         with:
-          orch-url: ${{ env.ORCH_URL }}
+          test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
           identity: ${{ needs.controller.outputs.identity-json }}
           mattermost-dir: ${{ github.workspace }}/mm
           artifacts-root: ${{ github.workspace }}/worker-artifacts
@@ -209,5 +209,5 @@ jobs:
       - name: ci/finalize-reports
         uses: ./.github/actions/tsio-reports-finalize
         with:
-          orch-url: ${{ env.ORCH_URL }}
+          test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
           identity: ${{ needs.controller.outputs.identity-json }}

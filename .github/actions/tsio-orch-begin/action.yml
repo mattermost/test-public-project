@@ -1,12 +1,12 @@
-name: "TSIO orchestration: begin run"
+name: "Test System IO orchestration: begin run"
 description: >
   Discover Playwright spec files under <mattermost-dir>/e2e-tests/playwright/specs/
   and POST /api/v1/orchestration/begin and /api/v1/reports/begin so workers can
   drain the queue and shard uploads land under a known report group.
 
 inputs:
-  orch-url:
-    description: "TSIO base URL (e.g. https://staging-test-io.test.mattermost.com)"
+  test-system-io-url:
+    description: "Test System IO base URL (e.g. https://staging-test-io.test.mattermost.com)"
     required: true
   oidc-audience:
     description: "OIDC audience claim the orchestrator expects (matches TSIO_GITHUB_ACTIONS_OIDC_AUDIENCE)"
@@ -65,8 +65,8 @@ runs:
         echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
     - shell: bash
       env:
-        ORCH_URL: ${{ inputs.orch-url }}
-        TSIO_BEARER: ${{ steps.oidc.outputs.token }}
+        TEST_SYSTEM_IO_URL: ${{ inputs.test-system-io-url }}
+        TEST_SYSTEM_IO_BEARER: ${{ steps.oidc.outputs.token }}
         MATTERMOST_DIR: ${{ inputs.mattermost-dir }}
         IDENTITY: ${{ inputs.identity }}
         RETEST_ON_FAIL: ${{ inputs.retest-on-fail }}

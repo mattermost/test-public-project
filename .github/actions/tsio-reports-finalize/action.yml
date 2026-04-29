@@ -1,4 +1,4 @@
-name: "TSIO orchestration: finalize report group"
+name: "Test System IO orchestration: finalize report group"
 description: >
   POST /api/v1/reports/complete (idempotent on composite identity), fetch
   /api/v1/orchestration/status, and write a job summary to $GITHUB_STEP_SUMMARY.
@@ -6,8 +6,8 @@ description: >
   reach `completed`.
 
 inputs:
-  orch-url:
-    description: "TSIO base URL"
+  test-system-io-url:
+    description: "Test System IO base URL"
     required: true
   oidc-audience:
     description: "OIDC audience claim the orchestrator expects"
@@ -47,8 +47,8 @@ runs:
         echo "token=${TOKEN}" >> "$GITHUB_OUTPUT"
     - shell: bash
       env:
-        ORCH_URL: ${{ inputs.orch-url }}
-        TSIO_BEARER: ${{ steps.oidc.outputs.token }}
+        TEST_SYSTEM_IO_URL: ${{ inputs.test-system-io-url }}
+        TEST_SYSTEM_IO_BEARER: ${{ steps.oidc.outputs.token }}
         IDENTITY: ${{ inputs.identity }}
         FAIL_ON_TEST_FAILURES: ${{ inputs.fail-on-test-failures }}
       run: node "${GITHUB_ACTION_PATH}/reports-finalize.mjs"
