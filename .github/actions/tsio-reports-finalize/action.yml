@@ -13,7 +13,7 @@ inputs:
     description: "OIDC audience claim the orchestrator expects"
     required: false
     default: "mattermost-test-system-io"
-  identity:
+  composite-identity:
     description: "Composite identity JSON (same payload the begin action received)"
     required: true
   fail-on-test-failures:
@@ -49,6 +49,6 @@ runs:
       env:
         TEST_SYSTEM_IO_URL: ${{ inputs.test-system-io-url }}
         TEST_SYSTEM_IO_BEARER: ${{ steps.oidc.outputs.token }}
-        IDENTITY: ${{ inputs.identity }}
+        COMPOSITE_IDENTITY: ${{ inputs.composite-identity }}
         FAIL_ON_TEST_FAILURES: ${{ inputs.fail-on-test-failures }}
       run: node "${GITHUB_ACTION_PATH}/reports-finalize.mjs"

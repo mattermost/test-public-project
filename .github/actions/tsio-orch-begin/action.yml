@@ -15,7 +15,7 @@ inputs:
   mattermost-dir:
     description: "Path to a checked-out mattermost/mattermost"
     required: true
-  identity:
+  composite-identity:
     description: "Composite identity JSON {repository, commit_sha, gh_run_id, name, gh_run_attempt, branch}"
     required: true
   retest-on-fail:
@@ -68,7 +68,7 @@ runs:
         TEST_SYSTEM_IO_URL: ${{ inputs.test-system-io-url }}
         TEST_SYSTEM_IO_BEARER: ${{ steps.oidc.outputs.token }}
         MATTERMOST_DIR: ${{ inputs.mattermost-dir }}
-        IDENTITY: ${{ inputs.identity }}
+        COMPOSITE_IDENTITY: ${{ inputs.composite-identity }}
         RETEST_ON_FAIL: ${{ inputs.retest-on-fail }}
         RETEST_BUDGET: ${{ inputs.retest-budget }}
         LEASE_TIMEOUT_MS: ${{ inputs.lease-timeout-ms }}

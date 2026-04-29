@@ -14,7 +14,7 @@ inputs:
     description: "OIDC audience claim the orchestrator expects"
     required: false
     default: "mattermost-test-system-io"
-  identity:
+  composite-identity:
     description: "Composite identity JSON (same payload the begin action received)"
     required: true
   mattermost-dir:
@@ -75,7 +75,7 @@ runs:
       env:
         TEST_SYSTEM_IO_URL: ${{ inputs.test-system-io-url }}
         OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
-        IDENTITY: ${{ inputs.identity }}
+        COMPOSITE_IDENTITY: ${{ inputs.composite-identity }}
         MATTERMOST_DIR: ${{ inputs.mattermost-dir }}
         ARTIFACTS_ROOT: ${{ inputs.artifacts-root }}
         GH_JOB_ID: ${{ steps.resolve-job-id.outputs.id }}

@@ -76,7 +76,7 @@ jobs:
     name: orch-controller
     runs-on: ubuntu-24.04
     outputs:
-      identity-json: ${{ steps.identity.outputs.identity-json }}
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
       workers-matrix: ${{ steps.matrix.outputs.workers }}
       mattermost_sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
@@ -93,12 +93,12 @@ jobs:
         id: resolve-sha
         working-directory: mm
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: ci/identity
-        id: identity
+      - name: ci/composite-identity
+        id: composite-identity
         env:
           MM_SHA: ${{ steps.resolve-sha.outputs.sha }}
         run: |
-          IDENTITY=$(jq -nc \
+          COMPOSITE_IDENTITY=$(jq -nc \
             --arg repo "${{ env.MATTERMOST_REPO }}" \
             --arg sha "${MM_SHA}" \
             --arg run_id "${GITHUB_RUN_ID}" \
@@ -106,8 +106,8 @@ jobs:
             --arg attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg branch "${{ inputs.mattermost_ref }}" \
             '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch}')
-          echo "identity-json=${IDENTITY}" >> "$GITHUB_OUTPUT"
-          echo "Identity: ${IDENTITY}"
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
       - name: ci/matrix
         id: matrix
         run: |
@@ -117,7 +117,7 @@ jobs:
         with:
           test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
           mattermost-dir: ${{ github.workspace }}/mm
-          identity: ${{ steps.identity.outputs.identity-json }}
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
 
   workers:
@@ -130,7 +130,7 @@ jobs:
       matrix:
         worker_index: ${{ fromJSON(needs.controller.outputs.workers-matrix) }}
     env:
-      IDENTITY: ${{ needs.controller.outputs.identity-json }}
+      COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
       SERVER: onprem
       MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
       ENABLED_DOCKER_SERVICES: ${{ inputs.enabled_docker_services }}
@@ -178,7 +178,7 @@ jobs:
         uses: ./.github/actions/tsio-orch-worker
         with:
           test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
-          identity: ${{ needs.controller.outputs.identity-json }}
+          composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
           mattermost-dir: ${{ github.workspace }}/mm
           artifacts-root: ${{ github.workspace }}/worker-artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -203,11 +203,11 @@ jobs:
     needs: [controller, workers]
     if: always()
     env:
-      IDENTITY: ${{ needs.controller.outputs.identity-json }}
+      COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: ci/finalize-reports
         uses: ./.github/actions/tsio-reports-finalize
         with:
           test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
-          identity: ${{ needs.controller.outputs.identity-json }}
+          composite-identity: ${{ needs.controller.outputs.composite-identity-json }}

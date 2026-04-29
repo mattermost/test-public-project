@@ -9,7 +9,7 @@ import path from 'node:path';
 const TEST_SYSTEM_IO_URL = required('TEST_SYSTEM_IO_URL');
 const TEST_SYSTEM_IO_BEARER = required('TEST_SYSTEM_IO_BEARER');
 const MATTERMOST_DIR = required('MATTERMOST_DIR');
-const IDENTITY = JSON.parse(required('IDENTITY'));
+const COMPOSITE_IDENTITY = JSON.parse(required('COMPOSITE_IDENTITY'));
 const RETEST_ON_FAIL = process.env.RETEST_ON_FAIL === 'true';
 const RETEST_BUDGET = intEnv('RETEST_BUDGET', 1);
 const LEASE_TIMEOUT_MS = intEnv('LEASE_TIMEOUT_MS', 600_000);
@@ -28,7 +28,7 @@ const dispatchUnits = specs.map((p) => ({ spec_path: p }));
 console.log(`[controller] discovered ${dispatchUnits.length} spec file(s)`);
 
 const beginBody = {
-  ...IDENTITY,
+  ...COMPOSITE_IDENTITY,
   framework: 'playwright',
   playwright_project: PLAYWRIGHT_PROJECT,
   lease_timeout_ms: LEASE_TIMEOUT_MS,
@@ -95,15 +95,15 @@ function discoverSpecs() {
 
 function identityForReports() {
   const body = {
-    repository: IDENTITY.repository,
-    commit: IDENTITY.commit_sha,
-    gh_run_id: IDENTITY.gh_run_id,
-    gh_run_attempt: IDENTITY.gh_run_attempt,
+    repository: COMPOSITE_IDENTITY.repository,
+    commit: COMPOSITE_IDENTITY.commit_sha,
+    gh_run_id: COMPOSITE_IDENTITY.gh_run_id,
+    gh_run_attempt: COMPOSITE_IDENTITY.gh_run_attempt,
     framework: 'playwright',
-    name: IDENTITY.name,
-    branch: IDENTITY.branch,
+    name: COMPOSITE_IDENTITY.name,
+    branch: COMPOSITE_IDENTITY.branch,
   };
-  if (IDENTITY.gh_pr_number != null) body.gh_pr_number = IDENTITY.gh_pr_number;
+  if (COMPOSITE_IDENTITY.gh_pr_number != null) body.gh_pr_number = COMPOSITE_IDENTITY.gh_pr_number;
   return body;
 }
 

@@ -8,18 +8,18 @@ import fs from 'node:fs';
 
 const TEST_SYSTEM_IO_URL = required('TEST_SYSTEM_IO_URL');
 const TEST_SYSTEM_IO_BEARER = required('TEST_SYSTEM_IO_BEARER');
-const IDENTITY = JSON.parse(required('IDENTITY'));
+const COMPOSITE_IDENTITY = JSON.parse(required('COMPOSITE_IDENTITY'));
 
 const reportsIdent = {
-  repository: IDENTITY.repository,
-  commit: IDENTITY.commit_sha,
-  gh_run_id: IDENTITY.gh_run_id,
-  gh_run_attempt: IDENTITY.gh_run_attempt,
+  repository: COMPOSITE_IDENTITY.repository,
+  commit: COMPOSITE_IDENTITY.commit_sha,
+  gh_run_id: COMPOSITE_IDENTITY.gh_run_id,
+  gh_run_attempt: COMPOSITE_IDENTITY.gh_run_attempt,
   framework: 'playwright',
-  name: IDENTITY.name,
-  branch: IDENTITY.branch,
+  name: COMPOSITE_IDENTITY.name,
+  branch: COMPOSITE_IDENTITY.branch,
 };
-if (IDENTITY.gh_pr_number != null) reportsIdent.gh_pr_number = IDENTITY.gh_pr_number;
+if (COMPOSITE_IDENTITY.gh_pr_number != null) reportsIdent.gh_pr_number = COMPOSITE_IDENTITY.gh_pr_number;
 
 const completeRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/reports/complete`, {
   method: 'POST',
@@ -34,11 +34,11 @@ if (completeRes.status !== 200) {
 }
 
 const params = new URLSearchParams({
-  repository: IDENTITY.repository,
-  commit_sha: IDENTITY.commit_sha,
-  gh_run_id: IDENTITY.gh_run_id,
-  name: IDENTITY.name,
-  gh_run_attempt: IDENTITY.gh_run_attempt,
+  repository: COMPOSITE_IDENTITY.repository,
+  commit_sha: COMPOSITE_IDENTITY.commit_sha,
+  gh_run_id: COMPOSITE_IDENTITY.gh_run_id,
+  name: COMPOSITE_IDENTITY.name,
+  gh_run_attempt: COMPOSITE_IDENTITY.gh_run_attempt,
 });
 const statusRes = await fetch(`${TEST_SYSTEM_IO_URL}/api/v1/orchestration/status?${params.toString()}`, {
   headers: { Authorization: `Bearer ${TEST_SYSTEM_IO_BEARER}` },
@@ -56,13 +56,13 @@ if (status) console.log(JSON.stringify(status, null, 2));
 // /reports/consolidated and /reports/grouped endpoints. Mirroring the same
 // path shape used elsewhere in the UI keeps deep links consistent and
 // browsable.
-const repoSlug = IDENTITY.repository || '';
+const repoSlug = COMPOSITE_IDENTITY.repository || '';
 const repoTrailing = repoSlug.split('/').pop() || repoSlug;
 const repo = encodeURIComponent(repoTrailing);
-const branch = encodeURIComponent(IDENTITY.branch || 'main');
-const shortSha = (IDENTITY.commit_sha || '').slice(0, 7);
-const name = encodeURIComponent(IDENTITY.name);
-const reportURL = `${TEST_SYSTEM_IO_URL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(IDENTITY.gh_run_id)}`;
+const branch = encodeURIComponent(COMPOSITE_IDENTITY.branch || 'main');
+const shortSha = (COMPOSITE_IDENTITY.commit_sha || '').slice(0, 7);
+const name = encodeURIComponent(COMPOSITE_IDENTITY.name);
+const reportURL = `${TEST_SYSTEM_IO_URL}/reports/${repo}/${branch}/${shortSha}/${name}?gh_run_id=${encodeURIComponent(COMPOSITE_IDENTITY.gh_run_id)}`;
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 if (summaryPath) {

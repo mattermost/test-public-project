@@ -3,7 +3,7 @@
 // per-iteration JSON + screenshots, and at queue-empty upload the worker's
 // accumulated artifacts as ONE shard report.
 //
-// Identity comes from $IDENTITY (composite) + $GH_JOB_ID/$GH_JOB_NAME (worker).
+// Identity comes from $COMPOSITE_IDENTITY + $GH_JOB_ID/$GH_JOB_NAME (worker).
 // The orchestrator looks up the worker's lease by (run, gh_job_id) so workers
 // never see a lease_id.
 
@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 
 const TEST_SYSTEM_IO_URL = required('TEST_SYSTEM_IO_URL');
 const OIDC_AUDIENCE = required('OIDC_AUDIENCE');
-const IDENTITY = JSON.parse(required('IDENTITY'));
+const COMPOSITE_IDENTITY = JSON.parse(required('COMPOSITE_IDENTITY'));
 const GH_JOB_ID = required('GH_JOB_ID');
 const GH_JOB_NAME = process.env.GH_JOB_NAME || 'orch-worker';
 const MATTERMOST_DIR = required('MATTERMOST_DIR');
@@ -35,13 +35,37 @@ fs.mkdirSync(WORKER_ARTIFACTS, { recursive: true });
 let iterationSeq = 0;
 const invocations = []; // { specPath, iterDir, playwrightJsonPath }
 
-await main();
+// Drain the queue and report shard at the end. uploadShard runs in a
+// finally block so accumulated artifacts get uploaded to Test System IO
+// even when the drain loop crashes mid-run (lease 401, network drop, etc.) —
+// otherwise everything ran so far is lost from the dashboard.
+let drainErr;
+try {
+  await drain();
+} catch (err) {
+  drainErr = err;
+  console.error(`[worker] drain loop failed: ${err.message}`);
+}
 
-async function main() {
+if (invocations.length > 0) {
+  try {
+    await uploadShard();
+  } catch (err) {
+    console.error(`[worker] uploadShard failed: ${err.message}`);
+    if (!drainErr) drainErr = err;
+  }
+}
+
+if (drainErr) {
+  console.error(drainErr.stack || drainErr.message);
+  process.exit(1);
+}
+
+async function drain() {
   let leasesHeld = 0;
   while (true) {
     const checkout = await postJSON('/api/v1/orchestration/checkout', {
-      ...IDENTITY,
+      ...COMPOSITE_IDENTITY,
       gh_job_name: GH_JOB_NAME,
       gh_job_id: GH_JOB_ID,
       batch_size: 1,
@@ -86,7 +110,7 @@ async function main() {
     }
 
     const completeRes = await postJSON('/api/v1/orchestration/complete', {
-      ...IDENTITY,
+      ...COMPOSITE_IDENTITY,
       gh_job_name: GH_JOB_NAME,
       gh_job_id: GH_JOB_ID,
       results,
@@ -99,8 +123,6 @@ async function main() {
       .join(',');
     console.log(`[worker] reported (${results.map((r) => r.status).join(',')}) → ${transitions || '(no transition)'}`);
   }
-
-  await uploadShard();
 }
 
 async function runUnit(specPaths) {
@@ -153,55 +175,60 @@ async function runUnit(specPaths) {
 // System IO test_cases table, one row per test attempt (so retries surface
 // as separate rows).
 function aggregateSpec(json, specPath, fallbackDurationMs) {
-  // The JSON reporter wraps file suites under a top-level project suite
-  // (e.g. { title: 'chrome', suites: [{ file: 'specs/...', ... }] }), so
-  // the matching suite for a spec_path is nested. Walk recursively and
-  // return the first suite whose `file` matches.
-  function findFileSuite(suites) {
-    for (const s of suites) {
-      if (s.file === specPath || s.title === specPath) return s;
-      const sub = findFileSuite(s.suites || []);
-      if (sub) return sub;
-    }
-    return null;
-  }
-  const fileSuite = findFileSuite(json.suites || []);
-  if (!fileSuite) {
-    return { spec_path: specPath, status: 'skipped', actual_duration_ms: 0, test_cases: [] };
-  }
-
+  // Walk the suite tree, inheriting each suite's `file` from its nearest
+  // ancestor (the JSON reporter sets `file` on the file-level suite, then
+  // any nested `describe` sub-suites omit it). Only collect test cases
+  // whose effective file matches `specPath` — robust enough to handle a
+  // batched worker (multiple specs in one Playwright invocation) and the
+  // path-format variation across project configs (relative-to-testDir vs.
+  // relative-to-repo-root).
   const ranks = { skipped: 0, passed: 1, flaky: 2, interrupted: 3, timedOut: 4, failed: 5 };
   const cases = [];
   let totalMs = 0;
   let worst = 'skipped';
 
-  function visit(suite, ancestors) {
+  function fileMatches(file) {
+    if (!file) return false;
+    if (file === specPath) return true;
+    if (file.endsWith('/' + specPath)) return true;
+    if (specPath.endsWith('/' + file)) return true;
+    return false;
+  }
+
+  function visit(suite, ancestors, currentFile) {
     const here = suite.title ? [...ancestors, suite.title] : ancestors;
-    for (const s of suite.specs || []) {
-      const specTitle = [...here, s.title];
-      for (const t of s.tests || []) {
-        for (const r of t.results || []) {
-          const status = mapStatus(r.status);
-          const tc = {
-            title: s.title,
-            full_title: specTitle.join(' > '),
-            status,
-            retry_count: r.retry || 0,
-            duration_ms: r.duration || 0,
-            ordinal: cases.length,
-          };
-          const err = (r.errors && r.errors[0]) || r.error;
-          if (err?.message) tc.error_message = err.message;
-          if (err?.stack) tc.error_stack = err.stack;
-          cases.push(tc);
-          totalMs += tc.duration_ms;
-          if ((ranks[status] ?? 0) > (ranks[worst] ?? 0)) worst = status;
+    const suiteFile = suite.file || currentFile;
+    if (fileMatches(suiteFile)) {
+      for (const s of suite.specs || []) {
+        const specTitle = [...here, s.title];
+        for (const t of s.tests || []) {
+          for (const r of t.results || []) {
+            const status = mapStatus(r.status);
+            const tc = {
+              title: s.title,
+              full_title: specTitle.join(' > '),
+              status,
+              retry_count: r.retry || 0,
+              duration_ms: r.duration || 0,
+              ordinal: cases.length,
+            };
+            const err = (r.errors && r.errors[0]) || r.error;
+            if (err?.message) tc.error_message = err.message;
+            if (err?.stack) tc.error_stack = err.stack;
+            cases.push(tc);
+            totalMs += tc.duration_ms;
+            if ((ranks[status] ?? 0) > (ranks[worst] ?? 0)) worst = status;
+          }
         }
       }
     }
-    for (const sub of suite.suites || []) visit(sub, here);
+    for (const sub of suite.suites || []) visit(sub, here, suiteFile);
   }
-  visit(fileSuite, []);
+  for (const s of json.suites || []) visit(s, [], '');
+
+  if (cases.length === 0) {
+    return { spec_path: specPath, status: 'skipped', actual_duration_ms: 0, test_cases: [] };
+  }
 
   const out = {
     spec_path: specPath,
@@ -358,15 +385,15 @@ function listImages(root) {
 
 function identityForReports() {
   const body = {
-    repository: IDENTITY.repository,
-    commit: IDENTITY.commit_sha,
-    gh_run_id: IDENTITY.gh_run_id,
-    gh_run_attempt: IDENTITY.gh_run_attempt,
+    repository: COMPOSITE_IDENTITY.repository,
+    commit: COMPOSITE_IDENTITY.commit_sha,
+    gh_run_id: COMPOSITE_IDENTITY.gh_run_id,
+    gh_run_attempt: COMPOSITE_IDENTITY.gh_run_attempt,
     framework: 'playwright',
-    name: IDENTITY.name,
-    branch: IDENTITY.branch,
+    name: COMPOSITE_IDENTITY.name,
+    branch: COMPOSITE_IDENTITY.branch,
   };
-  if (IDENTITY.gh_pr_number != null) body.gh_pr_number = IDENTITY.gh_pr_number;
+  if (COMPOSITE_IDENTITY.gh_pr_number != null) body.gh_pr_number = COMPOSITE_IDENTITY.gh_pr_number;
   return body;
 }
 
