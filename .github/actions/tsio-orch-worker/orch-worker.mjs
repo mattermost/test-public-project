@@ -225,8 +225,25 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
       for (const s of suite.specs || []) {
         const specTitle = [...here, s.title];
         for (const t of s.tests || []) {
+          // Each `t.results[]` carries one entry per Playwright execution
+          // (initial run + each --retries retry). Aggregate per-test BEFORE
+          // touching `worst`: a test that failed once and passed on retry
+          // is "flaky" (== passed) at the test level, not a hard failure.
+          // The per-result rows below still record every attempt so the
+          // dashboard's expanded view can show the full retry history.
+          let everPassed = false;
+          let everFailed = false;
+          let everTimedOut = false;
+          let everInterrupted = false;
+          let everSkipped = false;
           for (const r of t.results || []) {
             const status = mapStatus(r.status);
+            if (status === 'passed' || status === 'flaky') everPassed = true;
+            else if (status === 'failed') everFailed = true;
+            else if (status === 'timedOut') everTimedOut = true;
+            else if (status === 'interrupted') everInterrupted = true;
+            else if (status === 'skipped') everSkipped = true;
+
             const tc = {
               title: s.title,
               full_title: specTitle.join(' > '),
@@ -240,8 +257,17 @@ function aggregateSpec(json, specPath, fallbackDurationMs) {
             if (err?.stack) tc.error_stack = err.stack;
             cases.push(tc);
             totalMs += tc.duration_ms;
-            if ((ranks[status] ?? 0) > (ranks[worst] ?? 0)) worst = status;
           }
+
+          let testOutcome;
+          if (everPassed && (everFailed || everTimedOut || everInterrupted)) testOutcome = 'flaky';
+          else if (everPassed) testOutcome = 'passed';
+          else if (everInterrupted) testOutcome = 'interrupted';
+          else if (everTimedOut) testOutcome = 'timedOut';
+          else if (everFailed) testOutcome = 'failed';
+          else if (everSkipped) testOutcome = 'skipped';
+          else continue;
+          if ((ranks[testOutcome] ?? 0) > (ranks[worst] ?? 0)) worst = testOutcome;
         }
       }
     }
