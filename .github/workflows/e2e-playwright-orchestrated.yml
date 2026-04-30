@@ -58,10 +58,10 @@ on:
         description: "Re-dispatch failed dispatch units once (orchestration-level whole-spec retry, on top of Playwright --retries)"
         type: boolean
         default: true
-      test_system_io_url:
-        description: "Test System IO base URL"
-        type: string
-        default: "https://staging-test-io.test.mattermost.com"
+      test_system_io_use_staging:
+        description: "Target the staging deployment instead of production"
+        type: boolean
+        default: true
       test_system_io_run_name:
         description: "Test System IO run name (stable across re-runs of the same workflow)"
         type: string
@@ -72,7 +72,7 @@ permissions:
   id-token: write   # needed to mint GitHub Actions OIDC tokens for Test System IO auth
 
 env:
-  TEST_SYSTEM_IO_URL: ${{ inputs.test_system_io_url }}
+  TEST_SYSTEM_IO_USE_STAGING: ${{ inputs.test_system_io_use_staging }}
   TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
   MATTERMOST_REPO: mattermost/mattermost
   SERVER_IMAGE: "${{ inputs.server_image_repo }}/${{ inputs.server_edition == 'fips' && 'mattermost-enterprise-fips-edition' || inputs.server_edition == 'team' && 'mattermost-team-edition' || 'mattermost-enterprise-edition' }}:${{ inputs.server_image_tag }}"
@@ -119,10 +119,10 @@ jobs:
         run: |
           echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
       - name: ci/begin-orchestration
-        uses: ./.github/actions/tsio-orch-begin
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-begin@main
         with:
-          test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
-          mattermost-dir: ${{ github.workspace }}/mm
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          repo-dir: ${{ github.workspace }}/mm
           composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
 
@@ -181,11 +181,11 @@ jobs:
           npm run build
           npx playwright test --project=setup
       - name: ci/run-orchestrated-worker
-        uses: ./.github/actions/tsio-orch-worker
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-worker@main
         with:
-          test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
-          mattermost-dir: ${{ github.workspace }}/mm
+          repo-dir: ${{ github.workspace }}/mm
           artifacts-root: ${{ github.workspace }}/worker-artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-job-name: orch-worker-${{ matrix.worker_index }}
@@ -221,7 +221,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: ci/finalize-reports
-        uses: ./.github/actions/tsio-reports-finalize
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-reports-complete@main
         with:
-          test-system-io-url: ${{ env.TEST_SYSTEM_IO_URL }}
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          framework: playwright
