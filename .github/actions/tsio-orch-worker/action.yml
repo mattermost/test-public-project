@@ -36,6 +36,16 @@ inputs:
       with the workers job's name field — the matrix-suffix template
       passed here must match the matrix-suffix template on `name:`.
     required: true
+  playwright-retries:
+    description: >
+      Value passed to `npx playwright test --retries=N` so Playwright
+      handles flaky-test retries within a single process invocation.
+      Each spec is dispatched to the orchestration queue once; the
+      orchestration retest queue is reserved for whole-spec catastrophic
+      failures and is opt-in via the workflow's retest_on_fail input.
+      Set to 0 to disable Playwright-internal retries entirely.
+    required: false
+    default: "2"
   node-version:
     description: "Node version for the worker script"
     required: false
@@ -77,4 +87,5 @@ runs:
         ARTIFACTS_ROOT: ${{ inputs.artifacts-root }}
         GH_JOB_ID: ${{ steps.resolve-job-id.outputs.id }}
         GH_JOB_NAME: ${{ inputs.gh-job-name }}
+        PLAYWRIGHT_RETRIES: ${{ inputs.playwright-retries }}
       run: node "${GITHUB_ACTION_PATH}/orch-worker.mjs"

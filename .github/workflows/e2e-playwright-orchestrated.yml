@@ -4,7 +4,9 @@
 #
 # Replaces:
 #   - Playwright `--shard=N/M` matrix → Test System IO orchestration (begin/checkout/complete)
-#   - Failed-spec retest job          → built-in retest_on_fail (orchestrator re-leases)
+#   - Failed-spec retest job          → Playwright --retries=N (per-spec, in-process). Optionally
+#                                       layered with retest_on_fail (orchestrator-level re-lease)
+#                                       for whole-spec catastrophic failures; off by default.
 #   - S3 report sync                  → Test System IO /api/v1/reports/* upload chain
 #
 # Authenticates to Test System IO via GitHub Actions OIDC (no api_key secret required).
@@ -48,8 +50,12 @@ on:
         description: "Number of parallel Test System IO worker jobs"
         type: number
         default: 8
+      playwright_retries:
+        description: "Playwright --retries=N value (per-spec, in-process retry of flaky tests)"
+        type: number
+        default: 1
       retest_on_fail:
-        description: "Re-dispatch failed dispatch units once"
+        description: "Re-dispatch failed dispatch units once (orchestration-level whole-spec retry, on top of Playwright --retries)"
         type: boolean
         default: true
       test_system_io_url:
@@ -183,6 +189,7 @@ jobs:
           artifacts-root: ${{ github.workspace }}/worker-artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-job-name: orch-worker-${{ matrix.worker_index }}
+          playwright-retries: ${{ inputs.playwright_retries }}
       - name: ci/cloud-teardown
         if: always()
         working-directory: mm/e2e-tests

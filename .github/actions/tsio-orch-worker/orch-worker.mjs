@@ -18,6 +18,16 @@ const GH_JOB_ID = required('GH_JOB_ID');
 const GH_JOB_NAME = process.env.GH_JOB_NAME || 'orch-worker';
 const MATTERMOST_DIR = required('MATTERMOST_DIR');
 const ARTIFACTS_ROOT = required('ARTIFACTS_ROOT');
+// Per-spec invocation passes --retries=N so Playwright handles flaky-test
+// retries within a single process. With this in place each spec only runs
+// once at the orchestration level — the orchestration retest queue is
+// reserved for cases where the entire spec failed catastrophically.
+const PLAYWRIGHT_RETRIES = (() => {
+  const raw = process.env.PLAYWRIGHT_RETRIES;
+  if (raw == null || raw === '') return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+})();
 
 // GH Actions OIDC tokens have a short TTL (~10 min). Long-running workers must
 // mint on demand instead of caching one upfront — otherwise the bearer expires
@@ -148,7 +158,9 @@ async function runUnit(specPaths) {
   // long-running mattermost server, so every spec's worth of setup re-runs
   // is wasted time.
   const args = ['playwright', 'test', '--project=chrome', '--grep-invert', '@visual',
-    '--no-deps', ...specPaths];
+    '--no-deps'];
+  if (PLAYWRIGHT_RETRIES > 0) args.push(`--retries=${PLAYWRIGHT_RETRIES}`);
+  args.push(...specPaths);
   const startedAt = Date.now();
   const child = spawnSync('npx', args, {
     cwd: PLAYWRIGHT_DIR,
