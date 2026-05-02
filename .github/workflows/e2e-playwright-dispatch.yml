@@ -1,25 +1,25 @@
 ---
-# Orchestrated variant of mattermost/mattermost's
+# Dispatch variant of mattermost/mattermost's
 # .github/workflows/e2e-tests-playwright-template.yml.
 #
 # Replaces:
-#   - Playwright `--shard=N/M` matrix → Test System IO orchestration (begin/checkout/complete)
+#   - Playwright `--shard=N/M` matrix → Test System IO dispatch (begin/checkout/complete)
 #   - Failed-spec retest job          → Playwright --retries=N (per-spec, in-process). Optionally
-#                                       layered with retest_on_fail (orchestrator-level re-lease)
+#                                       layered with retest_on_fail (dispatch-level re-lease)
 #                                       for whole-spec catastrophic failures; off by default.
 #   - S3 report sync                  → Test System IO /api/v1/reports/* upload chain
 #
 # Authenticates to Test System IO via GitHub Actions OIDC (no api_key secret required).
-# The staging orchestrator auto-seeds a `mattermost/* → uploader` policy on
-# every deploy via TSIO_BOOTSTRAP_OIDC_POLICIES, so any repo under the
-# mattermost/ org is authorized out of the box. Production seeds policies
-# manually via POST /api/v1/auth/oidc-policies (admin-key gated).
+# The staging server auto-seeds a `mattermost/* → uploader` policy on every
+# deploy via TSIO_BOOTSTRAP_OIDC_POLICIES, so any repo under the mattermost/
+# org is authorized out of the box. Production seeds policies manually via
+# POST /api/v1/auth/oidc-policies (admin-key gated).
 #
 # Server license is sourced from the org-level secret
 # `MM_E2E_TEST_LICENSE_ONPREM_ENT` (matches the convention used by the upstream
 # mattermost/mattermost workflows). Only required for enterprise tests.
 
-name: E2E - Playwright (Test System IO orchestrated)
+name: E2E - Playwright (Test System IO dispatch)
 
 on:
   workflow_dispatch:
@@ -47,7 +47,7 @@ on:
         type: string
         default: "postgres inbucket"
       workers:
-        description: "Number of parallel Test System IO worker jobs"
+        description: "Number of parallel Test System IO dispatch jobs"
         type: number
         default: 8
       playwright_retries:
@@ -55,7 +55,7 @@ on:
         type: number
         default: 1
       retest_on_fail:
-        description: "Re-dispatch failed dispatch units once (orchestration-level whole-spec retry, on top of Playwright --retries)"
+        description: "Re-dispatch failed dispatch units once (dispatch-level whole-spec retry, on top of Playwright --retries)"
         type: boolean
         default: true
       test_system_io_use_staging:
@@ -65,7 +65,7 @@ on:
       test_system_io_run_name:
         description: "Test System IO run name (stable across re-runs of the same workflow)"
         type: string
-        default: "playwright-orchestrated-test"
+        default: "playwright-dispatch-test"
 
 permissions:
   contents: read
@@ -79,7 +79,7 @@ env:
 
 jobs:
   controller:
-    name: orch-controller
+    name: dispatch-controller
     runs-on: ubuntu-24.04
     outputs:
       composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
@@ -118,16 +118,17 @@ jobs:
         id: matrix
         run: |
           echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
-      - name: ci/begin-orchestration
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-begin@main
+      - name: ci/dispatch-begin
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           repo-dir: ${{ github.workspace }}/mm
           composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          total-reports-expected: ${{ inputs.workers }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
 
   workers:
-    name: orch-worker-${{ matrix.worker_index }}
+    name: dispatch-run-${{ matrix.worker_index }}
     runs-on: ubuntu-24.04
     needs: controller
     timeout-minutes: 120
@@ -143,7 +144,7 @@ jobs:
       TEST: playwright
       BRANCH: ${{ inputs.mattermost_ref }}
       BUILD_ID: ${{ github.run_id }}
-      CI_BASE_URL: orchestrated-${{ matrix.worker_index }}
+      CI_BASE_URL: dispatch-${{ matrix.worker_index }}
     steps:
       - name: ci/checkout-tsio-pipeline
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -180,15 +181,15 @@ jobs:
           npm ci
           npm run build
           npx playwright test --project=setup
-      - name: ci/run-orchestrated-worker
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-worker@main
+      - name: ci/dispatch-run
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@main
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
           repo-dir: ${{ github.workspace }}/mm
           artifacts-root: ${{ github.workspace }}/worker-artifacts
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          gh-job-name: orch-worker-${{ matrix.worker_index }}
+          gh-job-name: dispatch-run-${{ matrix.worker_index }}
           playwright-retries: ${{ inputs.playwright_retries }}
       - name: ci/cloud-teardown
         if: always()
@@ -204,7 +205,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: orch-worker-${{ matrix.worker_index }}-debug
+          name: dispatch-run-${{ matrix.worker_index }}-debug
           path: |
             mm/e2e-tests/playwright/logs/
             mm/e2e-tests/playwright/results/
@@ -220,8 +221,8 @@ jobs:
       COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: ci/finalize-reports
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-reports-complete@main
+      - name: ci/run-summary
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summary@main
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
