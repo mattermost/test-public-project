@@ -50,6 +50,10 @@ on:
         description: "Number of parallel Test System IO dispatch jobs"
         type: number
         default: 8
+      playwright_project:
+        description: "Playwright project name (passed to both dispatch-begin metadata and dispatch-run --project=)."
+        type: string
+        default: chrome
       playwright_retries:
         description: "Playwright --retries=N value (per-spec, in-process retry of flaky tests)"
         type: number
@@ -126,6 +130,7 @@ jobs:
           composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
           total-reports-expected: ${{ inputs.workers }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
+          playwright-project: ${{ inputs.playwright_project }}
 
   workers:
     name: dispatch-run-${{ matrix.worker_index }}
@@ -191,6 +196,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-job-name: dispatch-run-${{ matrix.worker_index }}
           playwright-retries: ${{ inputs.playwright_retries }}
+          playwright-project: ${{ inputs.playwright_project }}
       - name: ci/cloud-teardown
         if: always()
         working-directory: mm/e2e-tests

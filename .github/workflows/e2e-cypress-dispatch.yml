@@ -54,7 +54,7 @@ on:
       workers:
         description: "Number of parallel Test System IO dispatch jobs"
         type: number
-        default: 10
+        default: 40
       retest_on_fail:
         description: "Re-dispatch failed dispatch units once (dispatch-level whole-spec retry, on top of cypress.config retries)"
         type: boolean
@@ -67,6 +67,30 @@ on:
         description: "Test System IO run name (stable across re-runs of the same workflow)"
         type: string
         default: "cypress-dispatch-test"
+      # Defaults below mirror the upstream automation-dashboard's stable
+      # `@prod` cycle filter so this workflow runs the same set of specs
+      # in the same dispatch order. Override any input from the
+      # workflow_dispatch UI to vary scope per run.
+      cypress_stage:
+        description: "Comma-separated `// Stage:` tag(s); spec must share at least one. Empty = no stage filter."
+        type: string
+        default: "@prod"
+      cypress_include_group:
+        description: "Comma-separated `// Group:` tag(s); spec must share at least one. Empty = no include filter."
+        type: string
+        default: ""
+      cypress_exclude_group:
+        description: "Comma-separated `// Group:` tag(s); spec dropped if it shares any. Empty = no exclude filter."
+        type: string
+        default: "@te_only,@cloud_only,@high_availability"
+      cypress_sort_first:
+        description: "Comma-separated `// Group:` tag(s); matching specs dispatched first."
+        type: string
+        default: "@compliance_export,@elasticsearch,@ldap_group,@ldap"
+      cypress_sort_last:
+        description: "Comma-separated `// Group:` tag(s); matching specs dispatched last."
+        type: string
+        default: "@saml,@keycloak,@plugin,@plugins_uninstall,@mfa,@license_removal"
 
 permissions:
   contents: read
@@ -128,6 +152,11 @@ jobs:
           composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
           total-reports-expected: ${{ inputs.workers }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
+          cypress-stage: ${{ inputs.cypress_stage }}
+          cypress-include-group: ${{ inputs.cypress_include_group }}
+          cypress-exclude-group: ${{ inputs.cypress_exclude_group }}
+          cypress-sort-first: ${{ inputs.cypress_sort_first }}
+          cypress-sort-last: ${{ inputs.cypress_sort_last }}
 
   workers:
     name: dispatch-run-${{ matrix.worker_index }}
