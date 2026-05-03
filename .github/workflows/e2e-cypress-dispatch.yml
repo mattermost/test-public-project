@@ -1,0 +1,237 @@
+---
+# Dispatch variant of mattermost/mattermost's
+# .github/workflows/e2e-tests-cypress-template.yml.
+#
+# Replaces:
+#   - Cypress group/spec sharding         → Test System IO dispatch (begin/checkout/complete)
+#   - Failed-spec retest job              → cypress.config retries (per-spec, in-process). Optionally
+#                                           layered with retest_on_fail (dispatch-level re-lease)
+#                                           for whole-spec catastrophic failures; off by default.
+#   - S3 report sync                      → Test System IO /api/v1/reports/* upload chain
+#
+# Authenticates to Test System IO via GitHub Actions OIDC (no api_key secret required).
+# The staging server auto-seeds a `mattermost/* → uploader` policy on every
+# deploy via TSIO_BOOTSTRAP_OIDC_POLICIES, so any repo under the mattermost/
+# org is authorized out of the box. Production seeds policies manually via
+# POST /api/v1/auth/oidc-policies (admin-key gated).
+#
+# Server license is sourced from the org-level secret
+# `MM_E2E_TEST_LICENSE_ONPREM_ENT` (matches the convention used by the upstream
+# mattermost/mattermost workflows). Only required for enterprise tests.
+
+name: E2E - Cypress (Test System IO dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mattermost_ref:
+        description: "mattermost/mattermost ref to test (branch/tag/sha)"
+        type: string
+        default: master
+      server_image_tag:
+        description: "Server image tag (e.g. master or short SHA)"
+        type: string
+        default: master
+      server_edition:
+        description: "Server edition"
+        type: choice
+        options: [enterprise, fips, team]
+        default: enterprise
+      server_image_repo:
+        description: "Docker registry"
+        type: choice
+        options: [mattermostdevelopment, mattermost]
+        default: mattermostdevelopment
+      enabled_docker_services:
+        description: "Space-separated docker services for cloud-init"
+        type: string
+        # Matches mattermost/mattermost's stock e2e-tests-cypress.yml. The
+        # `cypress` and `webhook-interactions` containers are auto-added by
+        # server.generate.sh when TEST=cypress, so they don't appear here.
+        # Available services to mix in: opensearch, redis (omitted to match
+        # stock; add via the workflow_dispatch input if a spec needs them).
+        default: "postgres inbucket minio openldap elasticsearch keycloak"
+      workers:
+        description: "Number of parallel Test System IO dispatch jobs"
+        type: number
+        default: 10
+      retest_on_fail:
+        description: "Re-dispatch failed dispatch units once (dispatch-level whole-spec retry, on top of cypress.config retries)"
+        type: boolean
+        default: true
+      test_system_io_use_staging:
+        description: "Target the staging deployment instead of production"
+        type: boolean
+        default: true
+      test_system_io_run_name:
+        description: "Test System IO run name (stable across re-runs of the same workflow)"
+        type: string
+        default: "cypress-dispatch-test"
+
+permissions:
+  contents: read
+  id-token: write   # needed to mint GitHub Actions OIDC tokens for Test System IO auth
+
+env:
+  TEST_SYSTEM_IO_USE_STAGING: ${{ inputs.test_system_io_use_staging }}
+  TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
+  MATTERMOST_REPO: mattermost/mattermost
+  SERVER_IMAGE: "${{ inputs.server_image_repo }}/${{ inputs.server_edition == 'fips' && 'mattermost-enterprise-fips-edition' || inputs.server_edition == 'team' && 'mattermost-team-edition' || 'mattermost-enterprise-edition' }}:${{ inputs.server_image_tag }}"
+
+jobs:
+  controller:
+    name: dispatch-controller
+    runs-on: ubuntu-24.04
+    outputs:
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
+      workers-matrix: ${{ steps.matrix.outputs.workers }}
+      mattermost_sha: ${{ steps.resolve-sha.outputs.sha }}
+    steps:
+      - name: ci/checkout-tsio-pipeline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ inputs.mattermost_ref }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/resolve-sha
+        id: resolve-sha
+        working-directory: mm
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: ci/composite-identity
+        id: composite-identity
+        env:
+          MM_SHA: ${{ steps.resolve-sha.outputs.sha }}
+        run: |
+          COMPOSITE_IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MATTERMOST_REPO }}" \
+            --arg sha "${MM_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${{ inputs.mattermost_ref }}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch}')
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
+      - name: ci/matrix
+        id: matrix
+        run: |
+          echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
+      - name: ci/dispatch-begin
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: cypress
+          repo-dir: ${{ github.workspace }}/mm
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers:
+    name: dispatch-run-${{ matrix.worker_index }}
+    runs-on: ubuntu-24.04
+    needs: controller
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.controller.outputs.workers-matrix) }}
+    env:
+      COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
+      SERVER: onprem
+      MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
+      ENABLED_DOCKER_SERVICES: ${{ inputs.enabled_docker_services }}
+      TEST: cypress
+      # Stock cypress invocations in mattermost/mattermost set TZ=Etc/UTC via
+      # cross-env (see e2e-tests/cypress/package.json scripts). The dispatch
+      # adapter spawns `npx cypress run` directly without cross-env, so set
+      # the timezone at the job level — several specs assume UTC for date
+      # rendering / parsing.
+      TZ: Etc/UTC
+      BRANCH: ${{ inputs.mattermost_ref }}
+      BUILD_ID: ${{ github.run_id }}
+      CI_BASE_URL: dispatch-${{ matrix.worker_index }}
+    steps:
+      - name: ci/checkout-tsio-pipeline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+          cache: npm
+          cache-dependency-path: mm/e2e-tests/cypress/package-lock.json
+      - name: ci/get-webapp-node-modules
+        working-directory: mm/webapp
+        run: make node_modules
+      - name: ci/cloud-init
+        working-directory: mm/e2e-tests
+        run: make cloud-init
+      - name: ci/start-server
+        working-directory: mm/e2e-tests
+        run: make start-server
+      # The cypress container's bind mount on `e2e-tests/cypress/` means
+      # `server.prepare.sh` already ran `npm i` against the same node_modules
+      # we'll use here. Re-run `npm ci` in the host context to replace any
+      # platform-specific native binaries with host-built ones, since the
+      # dispatch adapter spawns `npx cypress run` from the host. The binary
+      # cache lives at `~/.cache/Cypress` (per-user, not in node_modules),
+      # so the host needs its own download — npm's postinstall hook handles
+      # that automatically as part of `npm ci`.
+      - name: ci/prepare-cypress
+        working-directory: mm/e2e-tests/cypress
+        run: npm ci
+      - name: ci/dispatch-run
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@main
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: cypress
+          composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          repo-dir: ${{ github.workspace }}/mm
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-job-name: dispatch-run-${{ matrix.worker_index }}
+      - name: ci/cloud-teardown
+        if: always()
+        working-directory: mm/e2e-tests
+        run: make cloud-teardown
+      # Always uploaded, even when the worker exits non-zero, so a 401 on
+      # /complete or /reports/* doesn't lose the per-iteration Mochawesome
+      # JSON + screenshots. `worker-artifacts/<gh_job_id>/iter-N/` holds
+      # archived copies the worker made after each spec; the live
+      # `cypress/results/` catches the in-flight iteration that may not
+      # have been archived yet if the runner died mid-spec.
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: dispatch-run-${{ matrix.worker_index }}-debug
+          path: |
+            mm/e2e-tests/cypress/logs/
+            mm/e2e-tests/cypress/results/
+            mm/e2e-tests/cypress/tests/screenshots/
+            worker-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  report:
+    runs-on: ubuntu-24.04
+    needs: [controller, workers]
+    if: always()
+    env:
+      COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/run-summary
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summary@main
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          framework: cypress
