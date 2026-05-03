@@ -83,6 +83,10 @@ on:
         description: "Comma-separated `// Group:` tag(s); spec dropped if it shares any. Empty = no exclude filter."
         type: string
         default: "@te_only,@cloud_only,@high_availability"
+      cypress_skip_on:
+        description: "Comma-separated active-env tag(s); spec dropped if its `// Skip:` line shares any. Empty = no skip filter. Common active-env tags: @headless"
+        type: string
+        default: "@headless"
       cypress_sort_first:
         description: "Comma-separated `// Group:` tag(s); matching specs dispatched first."
         type: string
@@ -155,6 +159,7 @@ jobs:
           cypress-stage: ${{ inputs.cypress_stage }}
           cypress-include-group: ${{ inputs.cypress_include_group }}
           cypress-exclude-group: ${{ inputs.cypress_exclude_group }}
+          cypress-skip-on: ${{ inputs.cypress_skip_on }}
           cypress-sort-first: ${{ inputs.cypress_sort_first }}
           cypress-sort-last: ${{ inputs.cypress_sort_last }}
 
