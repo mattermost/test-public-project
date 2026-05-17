@@ -161,21 +161,6 @@ jobs:
         id: matrix
         run: |
           echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
-      - name: ci/dispatch-begin
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
-        with:
-          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
-          framework: cypress
-          repo-dir: ${{ github.workspace }}/mm
-          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
-          total-reports-expected: ${{ inputs.workers }}
-          retest-on-fail: ${{ inputs.retest_on_fail }}
-          cypress-stage: ${{ inputs.cypress_stage }}
-          cypress-include-group: ${{ inputs.cypress_include_group }}
-          cypress-exclude-group: ${{ inputs.cypress_exclude_group }}
-          cypress-skip-on: ${{ inputs.cypress_skip_on }}
-          cypress-sort-first: ${{ inputs.cypress_sort_first }}
-          cypress-sort-last: ${{ inputs.cypress_sort_last }}
 
   # Install cypress node_modules once, then workers restore from cache.
   prep-deps:
@@ -194,22 +179,56 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-      - name: ci/cache-cypress-node-modules
+      - name: ci/cache-cypress-deps
+        # node_modules + the cypress binary (downloaded to ~/.cache/Cypress by
+        # cypress's postinstall, not into node_modules). Both must be cached;
+        # otherwise workers see "cypress npm package installed but binary missing".
         id: cache-cypress
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: |
             mm/e2e-tests/cypress/node_modules
-          key: e2e-cypress-node-modules-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/cypress/package-lock.json') }}
-      - name: ci/install-cypress-node-modules
+            ~/.cache/Cypress
+          key: e2e-cypress-deps-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/cypress/package-lock.json') }}
+      - name: ci/install-cypress-deps
         if: steps.cache-cypress.outputs.cache-hit != 'true'
         working-directory: mm/e2e-tests/cypress
         run: npm ci
 
+  # Register the TSIO run AFTER prep-deps so workers reach dispatch-run
+  # within TSIO's inactivity window.
+  dispatch-begin:
+    name: dispatch-begin
+    runs-on: ubuntu-24.04
+    needs: [controller, prep-deps]
+    steps:
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: cypress
+          repo-dir: ${{ github.workspace }}/mm
+          composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+          cypress-stage: ${{ inputs.cypress_stage }}
+          cypress-include-group: ${{ inputs.cypress_include_group }}
+          cypress-exclude-group: ${{ inputs.cypress_exclude_group }}
+          cypress-skip-on: ${{ inputs.cypress_skip_on }}
+          cypress-sort-first: ${{ inputs.cypress_sort_first }}
+          cypress-sort-last: ${{ inputs.cypress_sort_last }}
+
   workers:
     name: dispatch-run-${{ matrix.worker_index }}
     runs-on: ubuntu-24.04
-    needs: [controller, prep-deps]
+    needs: [controller, dispatch-begin]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -243,12 +262,13 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-      - name: ci/restore-cypress-node-modules
+      - name: ci/restore-cypress-deps
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: |
             mm/e2e-tests/cypress/node_modules
-          key: e2e-cypress-node-modules-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/cypress/package-lock.json') }}
+            ~/.cache/Cypress
+          key: e2e-cypress-deps-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/cypress/package-lock.json') }}
           fail-on-cache-miss: true
       - name: ci/cloud-init
         working-directory: mm/e2e-tests
@@ -291,7 +311,7 @@ jobs:
 
   report:
     runs-on: ubuntu-24.04
-    needs: [controller, workers]
+    needs: [controller, dispatch-begin, workers]
     if: always()
     env:
       COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}

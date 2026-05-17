@@ -145,16 +145,6 @@ jobs:
         id: matrix
         run: |
           echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
-      - name: ci/dispatch-begin
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
-        with:
-          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
-          framework: playwright
-          repo-dir: ${{ github.workspace }}/mm
-          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
-          total-reports-expected: ${{ inputs.workers }}
-          retest-on-fail: ${{ inputs.retest_on_fail }}
-          playwright-project: ${{ inputs.playwright_project }}
 
   # Build @mattermost/client + @mattermost/types and install playwright deps once,
   # then workers restore from cache. Playwright only consumes those two packages
@@ -176,10 +166,16 @@ jobs:
         with:
           node-version-file: mm/.nvmrc
       - name: ci/cache-platform-pkgs
+        # `webapp/node_modules/@mattermost/{client,types}` are the workspace
+        # symlinks Node walks up to find when platform/client requires
+        # @mattermost/types. Without them, module resolution fails inside
+        # the slim slice.
         id: cache-platform-pkgs
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: |
+            mm/webapp/node_modules/@mattermost/client
+            mm/webapp/node_modules/@mattermost/types
             mm/webapp/platform/client/lib
             mm/webapp/platform/client/node_modules
             mm/webapp/platform/types/lib
@@ -225,10 +221,35 @@ jobs:
         working-directory: mm/e2e-tests/playwright
         run: npx playwright install chromium
 
+  # Register the TSIO run AFTER prep-deps so workers reach dispatch-run
+  # within TSIO's inactivity window.
+  dispatch-begin:
+    name: dispatch-begin
+    runs-on: ubuntu-24.04
+    needs: [controller, prep-deps]
+    steps:
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: playwright
+          repo-dir: ${{ github.workspace }}/mm
+          composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+          playwright-project: ${{ inputs.playwright_project }}
+
   workers:
     name: dispatch-run-${{ matrix.worker_index }}
     runs-on: ubuntu-24.04
-    needs: [controller, prep-deps]
+    needs: [controller, dispatch-begin]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -257,11 +278,13 @@ jobs:
         with:
           node-version-file: mm/.nvmrc
       - name: ci/restore-platform-pkgs
-        # Built lib/ for @mattermost/client and @mattermost/types — symlink
-        # targets for the playwright node_modules below.
+        # Built lib/ for @mattermost/client and @mattermost/types, plus the
+        # webapp workspace symlinks under webapp/node_modules/@mattermost/.
         uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: |
+            mm/webapp/node_modules/@mattermost/client
+            mm/webapp/node_modules/@mattermost/types
             mm/webapp/platform/client/lib
             mm/webapp/platform/client/node_modules
             mm/webapp/platform/types/lib
@@ -331,7 +354,7 @@ jobs:
 
   report:
     runs-on: ubuntu-24.04
-    needs: [controller, workers]
+    needs: [controller, dispatch-begin, workers]
     if: always()
     env:
       COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
