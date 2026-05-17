@@ -1,6 +1,6 @@
 ---
 # Dispatch variant of mattermost/mattermost's
-# .github/workflows/e2e-tests-playwright-template.yml.
+# .github/workflows/e2e-tests-playwright-template-v2.yml.
 #
 # Replaces:
 #   - Playwright `--shard=N/M` matrix → Test System IO dispatch (begin/checkout/complete)
@@ -24,8 +24,12 @@ name: E2E - Playwright (Test System IO dispatch)
 on:
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: "mattermost/mattermost PR number to test (overrides mattermost_ref when set)"
+        type: string
+        default: ""
       mattermost_ref:
-        description: "mattermost/mattermost ref to test (branch/tag/sha)"
+        description: "mattermost/mattermost ref to test (branch/tag/sha). Ignored if pr_number is set."
         type: string
         default: master
       server_image_tag:
@@ -88,15 +92,33 @@ jobs:
     outputs:
       composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
       workers-matrix: ${{ steps.matrix.outputs.workers }}
+      mattermost_ref: ${{ steps.resolve-ref.outputs.ref }}
+      mattermost_branch: ${{ steps.resolve-ref.outputs.branch }}
       mattermost_sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: ci/checkout-tsio-pipeline
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/resolve-mattermost-ref
+        # pr_number takes precedence over mattermost_ref when set. PRs are
+        # fetched via refs/pull/<n>/head; branch attribution becomes "pr-<n>"
+        # so the dashboard groups runs by PR rather than by source branch.
+        id: resolve-ref
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MATTERMOST_REF: ${{ inputs.mattermost_ref }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            echo "ref=refs/pull/${PR_NUMBER}/head" >> "$GITHUB_OUTPUT"
+            echo "branch=pr-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${MATTERMOST_REF}" >> "$GITHUB_OUTPUT"
+            echo "branch=${MATTERMOST_REF}" >> "$GITHUB_OUTPUT"
+          fi
       - name: ci/checkout-mattermost
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ env.MATTERMOST_REPO }}
-          ref: ${{ inputs.mattermost_ref }}
+          ref: ${{ steps.resolve-ref.outputs.ref }}
           path: mm
           fetch-depth: 1
       - name: ci/resolve-sha
@@ -107,6 +129,7 @@ jobs:
         id: composite-identity
         env:
           MM_SHA: ${{ steps.resolve-sha.outputs.sha }}
+          MM_BRANCH: ${{ steps.resolve-ref.outputs.branch }}
         run: |
           COMPOSITE_IDENTITY=$(jq -nc \
             --arg repo "${{ env.MATTERMOST_REPO }}" \
@@ -114,7 +137,7 @@ jobs:
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg name "${TEST_SYSTEM_IO_RUN_NAME}" \
             --arg attempt "${GITHUB_RUN_ATTEMPT}" \
-            --arg branch "${{ inputs.mattermost_ref }}" \
+            --arg branch "${MM_BRANCH}" \
             '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch}')
           echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
           echo "Composite identity: ${COMPOSITE_IDENTITY}"
@@ -126,17 +149,87 @@ jobs:
         uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@main
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: playwright
           repo-dir: ${{ github.workspace }}/mm
           composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
           total-reports-expected: ${{ inputs.workers }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
           playwright-project: ${{ inputs.playwright_project }}
 
+  # Build @mattermost/client + @mattermost/types and install playwright deps once,
+  # then workers restore from cache. Playwright only consumes those two packages
+  # from webapp, so cache just their built lib/ instead of all of webapp/node_modules.
+  prep-deps:
+    name: prep-deps
+    runs-on: ubuntu-24.04
+    needs: controller
+    timeout-minutes: 10
+    steps:
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+      - name: ci/cache-platform-pkgs
+        id: cache-platform-pkgs
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            mm/webapp/platform/client/lib
+            mm/webapp/platform/client/node_modules
+            mm/webapp/platform/types/lib
+            mm/webapp/platform/types/node_modules
+          key: e2e-platform-pkgs-${{ runner.os }}-${{ hashFiles('mm/webapp/package-lock.json', 'mm/webapp/platform/client/src/**', 'mm/webapp/platform/client/tsconfig*.json', 'mm/webapp/platform/types/src/**', 'mm/webapp/platform/types/tsconfig*.json') }}
+      - name: ci/build-platform-pkgs
+        # Full webapp install is needed for tsc + workspace linking; the
+        # postinstall builds platform/{client,types}/lib. We only cache those.
+        if: steps.cache-platform-pkgs.outputs.cache-hit != 'true'
+        working-directory: mm/webapp
+        run: make node_modules
+      - name: ci/cache-playwright-deps
+        # Caches node_modules + the rolled-up @mattermost/playwright-lib dist
+        # so workers don't re-run rollup on every job.
+        id: cache-playwright
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            mm/e2e-tests/playwright/node_modules
+            mm/e2e-tests/playwright/lib/dist
+            mm/e2e-tests/playwright/lib/node_modules
+          key: e2e-playwright-deps-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/playwright/package-lock.json', 'mm/e2e-tests/playwright/lib/src/**', 'mm/e2e-tests/playwright/lib/package.json', 'mm/e2e-tests/playwright/lib/rollup.config.js', 'mm/e2e-tests/playwright/lib/tsconfig.json') }}
+      - name: ci/install-playwright-deps
+        # `npm ci` creates symlinks at node_modules/@mattermost/{client,types}
+        # → webapp/platform/{client,types}; targets must already be built.
+        # The postinstall then builds lib/dist via rollup. Skip browser
+        # download here — chromium is cached separately below.
+        if: steps.cache-playwright.outputs.cache-hit != 'true'
+        working-directory: mm/e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci
+      - name: ci/cache-playwright-browsers
+        # Cache chromium binary (~150MB) keyed on the playwright lockfile so a
+        # version bump invalidates. Restored by workers; no docker image needed.
+        id: cache-pw-browsers
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/playwright/package-lock.json') }}
+      - name: ci/install-playwright-chromium
+        if: steps.cache-pw-browsers.outputs.cache-hit != 'true'
+        working-directory: mm/e2e-tests/playwright
+        run: npx playwright install chromium
+
   workers:
     name: dispatch-run-${{ matrix.worker_index }}
     runs-on: ubuntu-24.04
-    needs: controller
-    timeout-minutes: 120
+    needs: [controller, prep-deps]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -147,7 +240,7 @@ jobs:
       MM_LICENSE: ${{ secrets.MM_E2E_TEST_LICENSE_ONPREM_ENT }}
       ENABLED_DOCKER_SERVICES: ${{ inputs.enabled_docker_services }}
       TEST: playwright
-      BRANCH: ${{ inputs.mattermost_ref }}
+      BRANCH: ${{ needs.controller.outputs.mattermost_branch }}
       BUILD_ID: ${{ github.run_id }}
       CI_BASE_URL: dispatch-${{ matrix.worker_index }}
     steps:
@@ -163,33 +256,50 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-          cache: npm
-          cache-dependency-path: mm/e2e-tests/playwright/package-lock.json
-      - name: ci/get-webapp-node-modules
-        working-directory: mm/webapp
-        run: make node_modules
+      - name: ci/restore-platform-pkgs
+        # Built lib/ for @mattermost/client and @mattermost/types — symlink
+        # targets for the playwright node_modules below.
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            mm/webapp/platform/client/lib
+            mm/webapp/platform/client/node_modules
+            mm/webapp/platform/types/lib
+            mm/webapp/platform/types/node_modules
+          key: e2e-platform-pkgs-${{ runner.os }}-${{ hashFiles('mm/webapp/package-lock.json', 'mm/webapp/platform/client/src/**', 'mm/webapp/platform/client/tsconfig*.json', 'mm/webapp/platform/types/src/**', 'mm/webapp/platform/types/tsconfig*.json') }}
+          fail-on-cache-miss: true
+      - name: ci/restore-playwright-deps
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            mm/e2e-tests/playwright/node_modules
+            mm/e2e-tests/playwright/lib/dist
+            mm/e2e-tests/playwright/lib/node_modules
+          key: e2e-playwright-deps-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/playwright/package-lock.json', 'mm/e2e-tests/playwright/lib/src/**', 'mm/e2e-tests/playwright/lib/package.json', 'mm/e2e-tests/playwright/lib/rollup.config.js', 'mm/e2e-tests/playwright/lib/tsconfig.json') }}
+          fail-on-cache-miss: true
+      - name: ci/restore-playwright-browsers
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/playwright/package-lock.json') }}
+          fail-on-cache-miss: true
       - name: ci/cloud-init
         working-directory: mm/e2e-tests
         run: make cloud-init
       - name: ci/start-server
         working-directory: mm/e2e-tests
         run: make start-server
-      # Install + build playwright-lib once per worker job so the per-spec
-      # loop can dispatch `npx playwright test` without paying npm ci/build
-      # overhead on every iteration. Also run the `setup` project once here
-      # so per-spec runs can pass `--no-deps` and skip the ~700ms of
-      # plugin-load + server-deployment checks that would otherwise repeat
-      # before every spec.
+      # Run the `setup` project so per-spec dispatches can pass --no-deps
+      # and skip plugin-load + server-deployment checks. node_modules,
+      # lib/dist, and chromium are all restored from cache.
       - name: ci/prepare-playwright
         working-directory: mm/e2e-tests/playwright
-        run: |
-          npm ci
-          npm run build
-          npx playwright test --project=setup
+        run: npx playwright test --project=setup
       - name: ci/dispatch-run
         uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@main
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: playwright
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
           repo-dir: ${{ github.workspace }}/mm
           artifacts-root: ${{ github.workspace }}/worker-artifacts

@@ -1,6 +1,6 @@
 ---
 # Dispatch variant of mattermost/mattermost's
-# .github/workflows/e2e-tests-cypress-template.yml.
+# .github/workflows/e2e-tests-cypress-template-v2.yml.
 #
 # Replaces:
 #   - Cypress group/spec sharding         → Test System IO dispatch (begin/checkout/complete)
@@ -24,8 +24,12 @@ name: E2E - Cypress (Test System IO dispatch)
 on:
   workflow_dispatch:
     inputs:
+      pr_number:
+        description: "mattermost/mattermost PR number to test (overrides mattermost_ref when set)"
+        type: string
+        default: ""
       mattermost_ref:
-        description: "mattermost/mattermost ref to test (branch/tag/sha)"
+        description: "mattermost/mattermost ref to test (branch/tag/sha). Ignored if pr_number is set."
         type: string
         default: master
       server_image_tag:
@@ -45,11 +49,6 @@ on:
       enabled_docker_services:
         description: "Space-separated docker services for cloud-init"
         type: string
-        # Matches mattermost/mattermost's stock e2e-tests-cypress.yml. The
-        # `cypress` and `webhook-interactions` containers are auto-added by
-        # server.generate.sh when TEST=cypress, so they don't appear here.
-        # Available services to mix in: opensearch, redis (omitted to match
-        # stock; add via the workflow_dispatch input if a spec needs them).
         default: "postgres inbucket minio openldap elasticsearch keycloak"
       workers:
         description: "Number of parallel Test System IO dispatch jobs"
@@ -67,10 +66,6 @@ on:
         description: "Test System IO run name (stable across re-runs of the same workflow)"
         type: string
         default: "cypress-dispatch-test"
-      # Defaults below mirror the upstream automation-dashboard's stable
-      # `@prod` cycle filter so this workflow runs the same set of specs
-      # in the same dispatch order. Override any input from the
-      # workflow_dispatch UI to vary scope per run.
       cypress_stage:
         description: "Comma-separated `// Stage:` tag(s); spec must share at least one. Empty = no stage filter."
         type: string
@@ -113,15 +108,33 @@ jobs:
     outputs:
       composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
       workers-matrix: ${{ steps.matrix.outputs.workers }}
+      mattermost_ref: ${{ steps.resolve-ref.outputs.ref }}
+      mattermost_branch: ${{ steps.resolve-ref.outputs.branch }}
       mattermost_sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: ci/checkout-tsio-pipeline
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/resolve-mattermost-ref
+        # pr_number takes precedence over mattermost_ref when set. PRs are
+        # fetched via refs/pull/<n>/head; branch attribution becomes "pr-<n>"
+        # so the dashboard groups runs by PR rather than by source branch.
+        id: resolve-ref
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MATTERMOST_REF: ${{ inputs.mattermost_ref }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            echo "ref=refs/pull/${PR_NUMBER}/head" >> "$GITHUB_OUTPUT"
+            echo "branch=pr-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${MATTERMOST_REF}" >> "$GITHUB_OUTPUT"
+            echo "branch=${MATTERMOST_REF}" >> "$GITHUB_OUTPUT"
+          fi
       - name: ci/checkout-mattermost
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ env.MATTERMOST_REPO }}
-          ref: ${{ inputs.mattermost_ref }}
+          ref: ${{ steps.resolve-ref.outputs.ref }}
           path: mm
           fetch-depth: 1
       - name: ci/resolve-sha
@@ -132,6 +145,7 @@ jobs:
         id: composite-identity
         env:
           MM_SHA: ${{ steps.resolve-sha.outputs.sha }}
+          MM_BRANCH: ${{ steps.resolve-ref.outputs.branch }}
         run: |
           COMPOSITE_IDENTITY=$(jq -nc \
             --arg repo "${{ env.MATTERMOST_REPO }}" \
@@ -139,7 +153,7 @@ jobs:
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg name "${TEST_SYSTEM_IO_RUN_NAME}" \
             --arg attempt "${GITHUB_RUN_ATTEMPT}" \
-            --arg branch "${{ inputs.mattermost_ref }}" \
+            --arg branch "${MM_BRANCH}" \
             '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch}')
           echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
           echo "Composite identity: ${COMPOSITE_IDENTITY}"
@@ -163,11 +177,40 @@ jobs:
           cypress-sort-first: ${{ inputs.cypress_sort_first }}
           cypress-sort-last: ${{ inputs.cypress_sort_last }}
 
+  # Install cypress node_modules once, then workers restore from cache.
+  prep-deps:
+    name: prep-deps
+    runs-on: ubuntu-24.04
+    needs: controller
+    timeout-minutes: 10
+    steps:
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+      - name: ci/cache-cypress-node-modules
+        id: cache-cypress
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            mm/e2e-tests/cypress/node_modules
+          key: e2e-cypress-node-modules-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/cypress/package-lock.json') }}
+      - name: ci/install-cypress-node-modules
+        if: steps.cache-cypress.outputs.cache-hit != 'true'
+        working-directory: mm/e2e-tests/cypress
+        run: npm ci
+
   workers:
     name: dispatch-run-${{ matrix.worker_index }}
     runs-on: ubuntu-24.04
-    needs: controller
-    timeout-minutes: 120
+    needs: [controller, prep-deps]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -184,7 +227,7 @@ jobs:
       # the timezone at the job level — several specs assume UTC for date
       # rendering / parsing.
       TZ: Etc/UTC
-      BRANCH: ${{ inputs.mattermost_ref }}
+      BRANCH: ${{ needs.controller.outputs.mattermost_branch }}
       BUILD_ID: ${{ github.run_id }}
       CI_BASE_URL: dispatch-${{ matrix.worker_index }}
     steps:
@@ -200,28 +243,19 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-          cache: npm
-          cache-dependency-path: mm/e2e-tests/cypress/package-lock.json
-      - name: ci/get-webapp-node-modules
-        working-directory: mm/webapp
-        run: make node_modules
+      - name: ci/restore-cypress-node-modules
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: |
+            mm/e2e-tests/cypress/node_modules
+          key: e2e-cypress-node-modules-${{ runner.os }}-${{ hashFiles('mm/e2e-tests/cypress/package-lock.json') }}
+          fail-on-cache-miss: true
       - name: ci/cloud-init
         working-directory: mm/e2e-tests
         run: make cloud-init
       - name: ci/start-server
         working-directory: mm/e2e-tests
         run: make start-server
-      # The cypress container's bind mount on `e2e-tests/cypress/` means
-      # `server.prepare.sh` already ran `npm i` against the same node_modules
-      # we'll use here. Re-run `npm ci` in the host context to replace any
-      # platform-specific native binaries with host-built ones, since the
-      # dispatch adapter spawns `npx cypress run` from the host. The binary
-      # cache lives at `~/.cache/Cypress` (per-user, not in node_modules),
-      # so the host needs its own download — npm's postinstall hook handles
-      # that automatically as part of `npm ci`.
-      - name: ci/prepare-cypress
-        working-directory: mm/e2e-tests/cypress
-        run: npm ci
       - name: ci/dispatch-run
         uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@main
         with:
