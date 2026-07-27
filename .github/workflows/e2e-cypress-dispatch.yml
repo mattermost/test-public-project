@@ -224,8 +224,18 @@ jobs:
           ref: ${{ needs.controller.outputs.mattermost_sha }}
           path: mm
           fetch-depth: 1
+      - name: ci/checkout-test-system-io-actions
+        # `uses:` doesn't support the `inputs` context, so the pinned ref is
+        # applied here (checkout does support it) and the action below is
+        # referenced by local path instead of a remote `owner/repo@ref`.
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
       - name: ci/dispatch-begin
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@${{ inputs.test_system_io_actions_ref }}
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-begin
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           framework: cypress
@@ -291,8 +301,15 @@ jobs:
       - name: ci/start-server
         working-directory: mm/e2e-tests
         run: make start-server
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
       - name: ci/dispatch-run
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@${{ inputs.test_system_io_actions_ref }}
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-run
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           framework: cypress
@@ -332,8 +349,15 @@ jobs:
       COMPOSITE_IDENTITY: ${{ needs.controller.outputs.composite-identity-json }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
       - name: ci/run-summary
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summary@${{ inputs.test_system_io_actions_ref }}
+        uses: ./tsio-actions/.github/actions/test-system-io-summary
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
