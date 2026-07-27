@@ -86,6 +86,11 @@ permissions:
 env:
   TEST_SYSTEM_IO_USE_STAGING: ${{ inputs.test_system_io_use_staging }}
   TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
+  # commit-status-context became a hard-required input on the pinned
+  # test-system-io-summary SHA. Commit-status posting itself stays off
+  # (post-pending-commit-status/update-commit-status: "false") since this
+  # workflow doesn't grant `permissions: statuses: write`.
+  TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT: e2e-test/playwright-dispatch/${{ inputs.server_edition }}
   MATTERMOST_REPO: mattermost/mattermost
   SERVER_IMAGE: "${{ inputs.server_image_repo }}/${{ inputs.server_edition == 'fips' && 'mattermost-enterprise-fips-edition' || inputs.server_edition == 'team' && 'mattermost-team-edition' || 'mattermost-enterprise-edition' }}:${{ inputs.server_image_tag }}"
 
@@ -267,6 +272,8 @@ jobs:
           framework: playwright
           repo-dir: ${{ github.workspace }}/mm
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT }}
+          post-pending-commit-status: "false"
           total-reports-expected: ${{ inputs.workers }}
           retest-on-fail: ${{ inputs.retest_on_fail }}
           playwright-project: ${{ inputs.playwright_project }}
@@ -404,4 +411,6 @@ jobs:
         with:
           use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
           composite-identity: ${{ needs.controller.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT }}
+          update-commit-status: "false"
           framework: playwright
