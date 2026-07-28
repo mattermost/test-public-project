@@ -69,7 +69,7 @@ on:
       test_system_io_actions_ref:
         description: "mattermost/mattermost-test-system-io commit SHA (full 40-char) to source .github/actions/* from"
         type: string
-        default: cc3234f549672a46ebf3310f5f6de11519f88019
+        default: 1631d8fcea24f4545a0b3b7f77e41c2fe0be4418
       cypress_stage:
         description: "Comma-separated `// Stage:` tag(s); spec must share at least one. Empty = no stage filter."
         type: string
