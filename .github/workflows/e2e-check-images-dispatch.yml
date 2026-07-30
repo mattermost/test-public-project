@@ -1,0 +1,250 @@
+---
+# Dispatch workflow to manually test mattermost/mattermost PR #37761
+# ("Gate E2E Cypress/Playwright on image availability, with pre-warmed
+# caching") before it merges.
+#
+# mattermost/mattermost's e2e-tests-check-images.yml can't be called directly
+# via `uses:` here because reusable-workflow refs can't be templated with an
+# expression, so this replicates its three jobs (check-images,
+# cache-server-image, cache-fixed-images) against a checked-out copy of the
+# repo at pr_number/mattermost_ref, plus a verify-consumer job that restores
+# + `docker load`s both caches - mimicking what a real Cypress/Playwright
+# worker does - to prove the whole populate -> restore -> load round-trip
+# works.
+#
+# Point mattermost_ref at `master` (leaving pr_number empty) once the PR merges.
+
+name: E2E - Check Images (dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "mattermost/mattermost PR number to test (overrides mattermost_ref when set)"
+        type: string
+        default: "37761"
+      mattermost_ref:
+        description: "mattermost/mattermost ref to test (branch/tag/sha). Ignored if pr_number is set."
+        type: string
+        default: master
+      framework:
+        description: "cypress or playwright - selects which image set to verify"
+        type: choice
+        options: [cypress, playwright]
+        default: cypress
+      server_image_tag:
+        description: "Server image tag (e.g. master or short SHA)"
+        type: string
+        default: master
+      server_edition:
+        description: "Server edition"
+        type: choice
+        options: [enterprise, fips, team]
+        default: enterprise
+      server_image_repo:
+        description: "Docker registry"
+        type: choice
+        options: [mattermostdevelopment, mattermost]
+        default: mattermostdevelopment
+      enabled_docker_services:
+        description: "Space-separated docker services (cypress only)"
+        type: string
+        default: "postgres inbucket minio openldap elasticsearch keycloak"
+
+permissions:
+  contents: read
+
+env:
+  MATTERMOST_REPO: mattermost/mattermost
+  SERVER_IMAGE: "${{ inputs.server_image_repo }}/${{ inputs.server_edition == 'fips' && 'mattermost-enterprise-fips-edition' || inputs.server_edition == 'team' && 'mattermost-team-edition' || 'mattermost-enterprise-edition' }}:${{ inputs.server_image_tag }}"
+  # Mirrors the PINNED_IMAGES list in mattermost/mattermost's
+  # e2e-tests-check-images.yml - keep in sync with that file.
+  PINNED_IMAGES: |
+    mattermostdevelopment/mirrored-postgres:14
+    postgres:14
+    inbucket/inbucket:3.1.1
+    minio/minio:RELEASE.2024-06-22T05-26-45Z
+    osixia/openldap:1.4.0
+    quay.io/keycloak/keycloak:23.0.7
+    docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+    opensearchproject/opensearch:3.0.0
+    mcr.microsoft.com/azure-storage/azurite:3.34.0
+    cypress/browsers:node-24.14.0-chrome-145.0.7632.116-1-ff-148.0-edge-145.0.3800.70-1
+
+jobs:
+  controller:
+    name: resolve-ref
+    runs-on: ubuntu-24.04
+    outputs:
+      mattermost_sha: ${{ steps.resolve-sha.outputs.sha }}
+    steps:
+      - name: ci/resolve-mattermost-ref
+        id: resolve-ref
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MATTERMOST_REF: ${{ inputs.mattermost_ref }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            echo "ref=refs/pull/${PR_NUMBER}/head" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${MATTERMOST_REF}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ steps.resolve-ref.outputs.ref }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/resolve-sha
+        id: resolve-sha
+        working-directory: mm
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  check-images:
+    needs: controller
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: ci/checkout-mattermost
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MATTERMOST_REPO }}
+          ref: ${{ needs.controller.outputs.mattermost_sha }}
+          path: mm
+          fetch-depth: 1
+
+      - name: ci/check-images-available-cypress
+        if: inputs.framework == 'cypress'
+        working-directory: mm/e2e-tests/.ci
+        env:
+          SERVER: onprem
+          TEST: cypress
+          ENABLED_DOCKER_SERVICES: ${{ inputs.enabled_docker_services }}
+          BRANCH: image-check
+          BUILD_ID: image-check
+          CI_BASE_URL: image-check
+        run: |
+          bash ./server.generate.sh
+          export NODE_VERSION_REQUIRED=$(cat ../../.nvmrc)
+
+          ES_VERSION=$(sed -nE "s/^ARG ELASTICSEARCH_VERSION=(.+)/\1/p" ../../server/build/Dockerfile.elasticsearch)
+          OS_VERSION=$(sed -nE "s/^ARG OPENSEARCH_VERSION=(.+)/\1/p" ../../server/build/Dockerfile.opensearch)
+
+          mapfile -t IMAGES < <(docker compose -p mmserver -f server.yml config --images | sort -u)
+          for i in "${!IMAGES[@]}"; do
+            case "${IMAGES[$i]}" in
+              mmserver-elasticsearch) IMAGES[$i]="docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION}" ;;
+              mmserver-opensearch) IMAGES[$i]="opensearchproject/opensearch:${OS_VERSION}" ;;
+            esac
+          done
+
+          ./check_images.sh "${IMAGES[@]}"
+
+      - name: ci/check-images-available-playwright
+        if: inputs.framework == 'playwright'
+        working-directory: mm/e2e-tests/playwright/lib/src/containers
+        run: |
+          mapfile -t FIXED_IMAGES < <(
+            grep -E "^export const [A-Z_]+_IMAGE = '" default_images.ts \
+              | grep -v MATTERMOST_SERVER_IMAGE \
+              | sed -E "s/.*= '([^']+)';?/\1/"
+          )
+          ES_VERSION=$(sed -nE "s/^export const ELASTICSEARCH_VERSION = '([^']+)';?/\1/p" default_images.ts)
+          OS_VERSION=$(sed -nE "s/^export const OPENSEARCH_VERSION = '([^']+)';?/\1/p" default_images.ts)
+
+          ../../../.ci/check_images.sh \
+            "$SERVER_IMAGE" \
+            "${FIXED_IMAGES[@]}" \
+            "docker.elastic.co/elasticsearch/elasticsearch:${ES_VERSION}" \
+            "opensearchproject/opensearch:${OS_VERSION}"
+
+  cache-server-image:
+    needs: check-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: ci/resolve-server-image-digest
+        id: resolve
+        run: |
+          DIGEST=$(docker manifest inspect -v "$SERVER_IMAGE" | jq -r '
+            if type=="array"
+            then (.[] | select(.Descriptor.platform.architecture=="amd64" and .Descriptor.platform.os=="linux") | .Descriptor.digest)
+            else .Descriptor.digest
+            end' | head -1)
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: ci/cache-server-image
+        id: cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/docker-image-cache/server-image.tar.gz
+          key: docker-image-server-${{ steps.resolve.outputs.digest }}
+      - name: ci/populate-server-image-cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/docker-image-cache
+          docker pull --platform linux/amd64 "$SERVER_IMAGE"
+          docker save "$SERVER_IMAGE" | gzip > /tmp/docker-image-cache/server-image.tar.gz
+
+  cache-fixed-images:
+    needs: check-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      cache_key: ${{ steps.hash.outputs.key }}
+    steps:
+      - name: ci/hash-pinned-images
+        id: hash
+        run: echo "key=docker-images-fixed-$(sha256sum <<<"$PINNED_IMAGES" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: ci/cache-fixed-images
+        id: cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/docker-image-cache/fixed-images.tar.gz
+          key: ${{ steps.hash.outputs.key }}
+      - name: ci/populate-fixed-images-cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/docker-image-cache
+          mapfile -t IMAGES <<<"$PINNED_IMAGES"
+          for IMAGE in "${IMAGES[@]}"; do
+            docker pull "$IMAGE"
+          done
+          docker save "${IMAGES[@]}" | gzip > /tmp/docker-image-cache/fixed-images.tar.gz
+
+  # Mimics what a real Cypress/Playwright worker does: restore both caches
+  # populated above and `docker load` them, then list what's now present
+  # locally to prove the populate -> restore -> load round-trip actually works.
+  verify-cache-consumer:
+    needs: [cache-server-image, cache-fixed-images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: ci/restore-fixed-images-cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/docker-image-cache/fixed-images.tar.gz
+          key: ${{ needs.cache-fixed-images.outputs.cache_key }}
+      - name: ci/resolve-server-image-digest
+        id: resolve
+        run: |
+          DIGEST=$(docker manifest inspect -v "$SERVER_IMAGE" | jq -r '
+            if type=="array"
+            then (.[] | select(.Descriptor.platform.architecture=="amd64" and .Descriptor.platform.os=="linux") | .Descriptor.digest)
+            else .Descriptor.digest
+            end' | head -1)
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: ci/restore-server-image-cache
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: /tmp/docker-image-cache/server-image.tar.gz
+          key: docker-image-server-${{ steps.resolve.outputs.digest }}
+      - name: ci/load-cached-images
+        run: |
+          shopt -s nullglob
+          for f in /tmp/docker-image-cache/*.tar.gz; do
+            echo "Loading cached images from $f"
+            gunzip -c "$f" | docker load
+          done
+      - name: ci/list-loaded-images
+        run: docker images
