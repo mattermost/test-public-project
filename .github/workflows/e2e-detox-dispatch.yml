@@ -1,38 +1,20 @@
 ---
-# Dispatch variant of mattermost/mattermost-mobile's Detox E2E pipeline
-# (.github/workflows/e2e-detox-pr.yml -> e2e-detox.yml -> e2e-ios-template.yml /
-# e2e-android-template.yml).
+# Dispatch variant of mattermost-mobile's Detox E2E pipeline
+# (e2e-detox-pr.yml -> e2e-detox.yml -> e2e-ios/android-template.yml), minus
+# the build step: resolves a mattermost-mobile PR to the "E2E" run that
+# already built it, downloads its ios-build-simulator-*/android-build-files-*
+# artifacts, and drives Detox via Test System IO dispatch
+# (begin/checkout/complete) instead of static spec-count sharding.
 #
-# Unlike the upstream pipeline, this workflow does NOT build the app. It
-# resolves a mattermost-mobile PR number to the mattermost-mobile "E2E"
-# workflow run that already built it, downloads that run's
-# ios-build-simulator-*/android-build-files-* artifacts, and drives the
-# actual Detox test execution through Test System IO's dispatch actions
-# (begin/checkout/complete) instead of mobile's static spec-count sharding.
-#
-# Replaces:
-#   - generate-specs (split-tests.js) static sharding  -> TSIO dispatch (begin/checkout/complete)
-#   - build-ios-simulator / build-android-apk           -> cross-repo artifact download (see
-#                                                          resolve-run job) from an existing,
-#                                                          already-built mattermost-mobile PR run
-#   - generate-report / tsio-report-status.js           -> test-system-io-summary
-#
-# Authenticates to Test System IO via GitHub Actions OIDC (no api_key secret
-# required) — same convention as e2e-cypress-dispatch.yml /
-# e2e-playwright-dispatch.yml in this repo.
-#
-# Cross-repo artifact download requires a token with `actions: read` on
-# mattermost/mattermost-mobile — this reuses the repo's existing GH_TOKEN
-# secret (see pr-test-analysis.yml). If that secret's scope ever changes,
-# update the `github-token:` references below.
+# Auth: GitHub Actions OIDC, same as e2e-cypress-dispatch.yml /
+# e2e-playwright-dispatch.yml. Cross-repo artifact download needs a token
+# with `actions: read` on mattermost-mobile — reuses the repo's GH_TOKEN
+# secret.
 #
 # test_system_io_actions_ref defaults to 96a7dc24d914b41f5c22428e15c1c1f8b053b8b0
-# ("feat: add detox framework", mattermost-test-system-io PR #94) — the
-# commit that added Detox support to both dispatch actions' src/detox.ts and
-# the server's `detox` framework support. That PR is open, not yet merged to
-# main, but the SHA is immutable so pinning to it directly is safe; bump this
-# default once #94 merges (or sooner, if a later commit on that branch fixes
-# something this workflow needs).
+# (mattermost-test-system-io PR #94, "feat: add detox framework" — not yet
+# merged, but the SHA is immutable so pinning to it is safe). Bump once #94
+# merges.
 
 name: E2E - Detox (Test System IO dispatch)
 
@@ -138,18 +120,14 @@ env:
   TEST_SYSTEM_IO_USE_STAGING: ${{ inputs.test_system_io_use_staging }}
   TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
   MOBILE_REPO: mattermost/mattermost-mobile
-  # test-system-io-summary hard-requires commit-status-context even when
-  # update-commit-status is "false" (see e2e-cypress-dispatch.yml's header
-  # comment) — this workflow doesn't grant `permissions: statuses: write`,
-  # so the value is only ever used as a label, never posted anywhere.
+  # test-system-io-summary requires commit-status-context even with
+  # update-commit-status: "false" — unused here since statuses:write isn't granted.
   TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IOS: e2e-test/detox-ios
   TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IPAD: e2e-test/detox-ipad
   TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_ANDROID: e2e-test/detox-android
 
 jobs:
-  # Resolves the mattermost-mobile PR number to a head SHA + the "E2E"
-  # workflow run that already built ios-build-simulator-*/android-build-files-*
-  # for that commit, since this pipeline skips the build step entirely.
+  # Resolves the PR to a head SHA + the "E2E" run that already built its artifacts.
   resolve-run:
     name: resolve-mobile-pr-run
     runs-on: ubuntu-24.04
@@ -190,13 +168,10 @@ jobs:
               return;
             }
 
-            // mattermost-mobile's real E2E workflow (e2e-detox-pr.yml's
-            // update-initial-tsio-status job) posts commit statuses on the
-            // tested commit (inputs.MOBILE_VERSION == this PR's head SHA)
-            // whose target_url deep-links to that run. This is the only
-            // reliable anchor back to a run_id: a workflow_dispatch run's own
-            // head_sha is the ref the *workflow file* was dispatched
-            // against (normally main), not the commit under test.
+            // mattermost-mobile posts a commit status on the tested SHA whose
+            // target_url points at the E2E run — the only reliable way back to
+            // a run_id, since a workflow_dispatch run's head_sha is the ref the
+            // *workflow file* was dispatched against, not the commit under test.
             const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({
               owner, repo, ref: sha, per_page: 100,
             });
@@ -281,7 +256,7 @@ jobs:
   workers-ios:
     name: detox-ios-run-${{ matrix.worker_index }}
     if: inputs.platform == 'ios' || inputs.platform == 'both'
-    runs-on: macOS-26-arm64 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
+    runs-on: macos-15 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
     needs: [resolve-run, dispatch-begin-ios]
     timeout-minutes: 90
     strategy:
@@ -330,9 +305,7 @@ jobs:
         working-directory: mm/detox
         run: npm ci
 
-      # Simplified from e2e-ios-template.yml's "Pre-boot iOS Simulator" —
-      # finds-or-creates the named device/runtime, boots it, skips the
-      # autofill-disable/pre-warm perf-only steps.
+      # Finds-or-creates the named device/runtime, then boots it.
       - name: ci/boot-ios-simulator
         id: sim
         env:
@@ -352,10 +325,8 @@ jobs:
       - name: ci/install-ios-app
         run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
 
-      # Pins .detoxrc.json's ios.simulator/ios.ipad device entries to the
-      # exact booted simulator (reuses mobile's own script — see
-      # detox/utils/generate_detox_config_ci.js) so Detox never creates its
-      # own "-Detox" clone, which wouldn't have the app installed.
+      # Pins .detoxrc.json to the booted simulator (mobile's
+      # generate_detox_config_ci.js) so Detox doesn't create its own clone.
       - name: ci/generate-detox-config
         working-directory: mm/detox
         env:
@@ -442,11 +413,8 @@ jobs:
           framework: detox
 
   # ─── iPad ───────────────────────────────────────────────────────────────
-  # Same leg as mobile's e2e-detox.yml's run-ios-ipad-tests: gated on the
-  # `ios`/`both` platform choice (there's no separate `ipad` platform
-  # option), narrower search path (already scoped inside e2e/test/products/
-  # channels/ipad so detox-exclude-dir is disabled), its own much smaller
-  # worker count, and detox-config: ios.ipad.debug instead of ios.sim.debug.
+  # Gated on ios/both (no separate ipad platform choice), narrower search
+  # path, own worker count, detox-config: ios.ipad.debug.
 
   dispatch-begin-ipad:
     name: dispatch-begin (iPad)
@@ -505,7 +473,7 @@ jobs:
   workers-ipad:
     name: detox-ipad-run-${{ matrix.worker_index }}
     if: inputs.platform == 'ios' || inputs.platform == 'both'
-    runs-on: macOS-26-arm64 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
+    runs-on: macos-15 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
     needs: [resolve-run, dispatch-begin-ipad]
     timeout-minutes: 90
     strategy:
@@ -573,10 +541,8 @@ jobs:
       - name: ci/install-ipad-app
         run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
 
-      # Pins .detoxrc.json's ios.simulator/ios.ipad device entries to the
-      # exact booted simulator (reuses mobile's own script — see
-      # detox/utils/generate_detox_config_ci.js) so Detox never creates its
-      # own "-Detox" clone, which wouldn't have the app installed.
+      # Pins .detoxrc.json to the booted simulator (mobile's
+      # generate_detox_config_ci.js) so Detox doesn't create its own clone.
       - name: ci/generate-detox-config
         working-directory: mm/detox
         env:
@@ -721,7 +687,15 @@ jobs:
   workers-android:
     name: detox-android-run-${{ matrix.worker_index }}
     if: inputs.platform == 'android' || inputs.platform == 'both'
-    runs-on: ubuntu-latest-8-cores # KVM-capable, matches mobile's e2e-android-template.yml
+    # Standard hosted runner, not mobile's ubuntu-latest-8-cores larger
+    # runner — test-public-project doesn't have repo access to that runner
+    # group. Hardware-accelerated Android emulation (the "Enable KVM" step
+    # below) is only officially supported on GitHub's larger Linux runners;
+    # /dev/kvm availability here is unverified/undocumented on standard
+    # runners, so the emulator may fall back to slow software rendering or
+    # the KVM step may fail outright. Revisit once repo access to the larger
+    # runner group is granted (see e2e-detox-dispatch.yml PR discussion).
+    runs-on: ubuntu-24.04
     needs: [resolve-run, dispatch-begin-android]
     timeout-minutes: 90
     strategy:
@@ -776,11 +750,7 @@ jobs:
         run: |
           sdkmanager --install "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "system-images;android-${API_LEVEL};google_apis;x86_64"
 
-      # Simplified from mobile's detox/create_android_emulator.sh — creates
-      # the named AVD (must match .detoxrc.json's android.emulator
-      # device.avdName, default detox_pixel_8_api_35), boots it in the
-      # background so it stays up across the remaining steps in this job,
-      # and waits for full boot.
+      # Creates and boots the named AVD in the background, waits for full boot.
       - name: ci/create-and-boot-android-emulator
         env:
           AVD_NAME: ${{ inputs.android_avd_name }}
@@ -831,11 +801,7 @@ jobs:
             sleep 2
           done
       - name: ci/adb-reverse-metro
-        # adb root (implicitly run by some emulator setups) restarts adbd and
-        # drops prior reverse mappings, so this runs after Metro is up. Only
-        # Metro needs this — the SITE_*_URL test servers are real routable
-        # https URLs, not localhost, so no host<->emulator aliasing is needed
-        # for those (unlike a local dev-server setup).
+        # Only Metro needs this — SITE_*_URL are real https URLs, not localhost.
         run: |
           adb reverse --remove-all 2>/dev/null || true
           adb reverse tcp:8081 tcp:8081
