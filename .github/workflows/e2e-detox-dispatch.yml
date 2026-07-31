@@ -298,22 +298,34 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-      # --ignore-scripts skips mobile's preinstall (npx solidarity — a dev-env
-      # gate for watchman/CocoaPods/git-email we don't need since we don't
-      # build native code), matching mobile's own prepare-node-deps composite
-      # action, which does the same and then runs patch-package separately.
+      # Skips mobile's solidarity preinstall gate (watchman/CocoaPods/git-email
+      # checks for native builds we don't do); patch-package runs separately.
       - name: ci/npm-ci-root
         working-directory: mm
         run: npm ci --ignore-scripts
       - name: ci/patch-npm-dependencies
         working-directory: mm
         run: npx patch-package
+      # Generates dist/assets (incl. compassGlyphMap), skipped by
+      # --ignore-scripts above but required for Metro to resolve app imports.
+      - name: ci/generate-assets
+        working-directory: mm
+        run: node ./scripts/generate-assets.js
+      - name: ci/import-compass-icon
+        working-directory: mm
+        env:
+          COMPASS_ICONS: "node_modules/@mattermost/compass-icons/font/compass-icons.ttf"
+        run: |
+          cp "$COMPASS_ICONS" "assets/fonts/"
+          cp "$COMPASS_ICONS" "android/app/src/main/assets/fonts"
+      - name: ci/generate-compass-glyph-map
+        working-directory: mm
+        run: node scripts/generate-compass-glyph-map.mjs
       - name: ci/npm-ci-detox
         working-directory: mm/detox
         run: npm ci
 
-      # applesimutils is Detox's required iOS helper CLI (permissions,
-      # simulator interactions) — not preinstalled on GH's macOS runners.
+      # Installs applesimutils, Detox's iOS helper CLI — not preinstalled on GH runners.
       - name: ci/install-applesimutils
         run: |
           brew tap wix/brew
@@ -335,13 +347,21 @@ jobs:
           fi
           xcrun simctl boot "$SIMULATOR_ID" || true
           xcrun simctl bootstatus "$SIMULATOR_ID" -b
+
+          # Best-effort: suppresses iOS's "Save Password?" prompt via defaults
+          # writes (not fully reliable across iOS versions).
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.Passwords AutoFill -bool NO 2>/dev/null || true
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.Passwords AutoSave -bool NO 2>/dev/null || true
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.Passwords credentialSaveNotificationsEnabled -bool NO 2>/dev/null || true
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.springboard AutoFillPasswords -bool NO 2>/dev/null || true
+
           open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
           echo "simulator-id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
       - name: ci/install-ios-app
         run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
 
-      # Pins .detoxrc.json to the booted simulator (mobile's
-      # generate_detox_config_ci.js) so Detox doesn't create its own clone.
+      # Pins .detoxrc.json to the booted simulator so Detox reuses it instead
+      # of creating its own clone.
       - name: ci/generate-detox-config
         working-directory: mm/detox
         env:
@@ -530,22 +550,34 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-      # --ignore-scripts skips mobile's preinstall (npx solidarity — a dev-env
-      # gate for watchman/CocoaPods/git-email we don't need since we don't
-      # build native code), matching mobile's own prepare-node-deps composite
-      # action, which does the same and then runs patch-package separately.
+      # Skips mobile's solidarity preinstall gate (watchman/CocoaPods/git-email
+      # checks for native builds we don't do); patch-package runs separately.
       - name: ci/npm-ci-root
         working-directory: mm
         run: npm ci --ignore-scripts
       - name: ci/patch-npm-dependencies
         working-directory: mm
         run: npx patch-package
+      # Generates dist/assets (incl. compassGlyphMap), skipped by
+      # --ignore-scripts above but required for Metro to resolve app imports.
+      - name: ci/generate-assets
+        working-directory: mm
+        run: node ./scripts/generate-assets.js
+      - name: ci/import-compass-icon
+        working-directory: mm
+        env:
+          COMPASS_ICONS: "node_modules/@mattermost/compass-icons/font/compass-icons.ttf"
+        run: |
+          cp "$COMPASS_ICONS" "assets/fonts/"
+          cp "$COMPASS_ICONS" "android/app/src/main/assets/fonts"
+      - name: ci/generate-compass-glyph-map
+        working-directory: mm
+        run: node scripts/generate-compass-glyph-map.mjs
       - name: ci/npm-ci-detox
         working-directory: mm/detox
         run: npm ci
 
-      # applesimutils is Detox's required iOS helper CLI (permissions,
-      # simulator interactions) — not preinstalled on GH's macOS runners.
+      # Installs applesimutils, Detox's iOS helper CLI — not preinstalled on GH runners.
       - name: ci/install-applesimutils
         run: |
           brew tap wix/brew
@@ -566,13 +598,21 @@ jobs:
           fi
           xcrun simctl boot "$SIMULATOR_ID" || true
           xcrun simctl bootstatus "$SIMULATOR_ID" -b
+
+          # Best-effort: suppresses iOS's "Save Password?" prompt via defaults
+          # writes (not fully reliable across iOS versions).
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.Passwords AutoFill -bool NO 2>/dev/null || true
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.Passwords AutoSave -bool NO 2>/dev/null || true
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.Passwords credentialSaveNotificationsEnabled -bool NO 2>/dev/null || true
+          xcrun simctl spawn "$SIMULATOR_ID" defaults write com.apple.springboard AutoFillPasswords -bool NO 2>/dev/null || true
+
           open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
           echo "simulator-id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
       - name: ci/install-ipad-app
         run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
 
-      # Pins .detoxrc.json to the booted simulator (mobile's
-      # generate_detox_config_ci.js) so Detox doesn't create its own clone.
+      # Pins .detoxrc.json to the booted simulator so Detox reuses it instead
+      # of creating its own clone.
       - name: ci/generate-detox-config
         working-directory: mm/detox
         env:
@@ -717,14 +757,8 @@ jobs:
   workers-android:
     name: detox-android-run-${{ matrix.worker_index }}
     if: inputs.platform == 'android' || inputs.platform == 'both'
-    # Standard hosted runner, not mobile's ubuntu-latest-8-cores larger
-    # runner — test-public-project doesn't have repo access to that runner
-    # group. Hardware-accelerated Android emulation (the "Enable KVM" step
-    # below) is only officially supported on GitHub's larger Linux runners;
-    # /dev/kvm availability here is unverified/undocumented on standard
-    # runners, so the emulator may fall back to slow software rendering or
-    # the KVM step may fail outright. Revisit once repo access to the larger
-    # runner group is granted (see e2e-detox-dispatch.yml PR discussion).
+    # Standard runner, not mobile's larger ubuntu-latest-8-cores (no repo
+    # access) — /dev/kvm may be unavailable, unlike on larger Linux runners.
     runs-on: ubuntu-24.04
     needs: [resolve-run, dispatch-begin-android]
     timeout-minutes: 90
@@ -757,10 +791,7 @@ jobs:
           repository: ${{ env.MOBILE_REPO }}
           run-id: ${{ needs.resolve-run.outputs.mobile-run-id }}
           github-token: ${{ secrets.GH_TOKEN }}
-          # Matches .detoxrc.json's android.debug binaryPath
-          # (../android/app/build/outputs/apk/debug/app-debug.apk) — the
-          # upload preserved the outputs/** subtree, download reconstructs
-          # it under this path.
+          # Matches .detoxrc.json's android.debug binaryPath.
           path: mm/android/app/build
 
       # sdkmanager exists on the runner image but its cmdline-tools/latest/bin
@@ -774,10 +805,8 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      # libpulse0 is the emulator's audio backend dependency (missing on the
-      # standard runner image — causes "error while loading shared libraries:
-      # libpulse.so.0"); scrot/ffmpeg/xvfb match mobile's own
-      # e2e-android-template.yml "Install Dependencies" step.
+      # Installs the emulator's audio backend dep (libpulse0) plus scrot/ffmpeg,
+      # missing on the standard runner image.
       - name: ci/install-android-emulator-deps
         run: sudo apt-get install -y libpulse0 scrot ffmpeg xvfb
       - name: ci/start-xvfb
@@ -798,9 +827,8 @@ jobs:
           AVD_NAME: ${{ inputs.android_avd_name }}
           API_LEVEL: ${{ inputs.android_api_level }}
         run: |
-          # avdmanager/emulator otherwise disagree on the default AVD storage
-          # location (a known cmdline-tools ambiguity) — pin it explicitly,
-          # matching mobile's own create_android_emulator.sh.
+          # Pins the AVD storage location explicitly — avdmanager/emulator
+          # otherwise disagree on the default.
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           mkdir -p "$ANDROID_AVD_HOME"
           echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
@@ -829,16 +857,29 @@ jobs:
       - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version-file: mm/.nvmrc
-      # --ignore-scripts skips mobile's preinstall (npx solidarity — a dev-env
-      # gate for watchman/CocoaPods/git-email we don't need since we don't
-      # build native code), matching mobile's own prepare-node-deps composite
-      # action, which does the same and then runs patch-package separately.
+      # Skips mobile's solidarity preinstall gate (watchman/CocoaPods/git-email
+      # checks for native builds we don't do); patch-package runs separately.
       - name: ci/npm-ci-root
         working-directory: mm
         run: npm ci --ignore-scripts
       - name: ci/patch-npm-dependencies
         working-directory: mm
         run: npx patch-package
+      # Generates dist/assets (incl. compassGlyphMap), skipped by
+      # --ignore-scripts above but required for Metro to resolve app imports.
+      - name: ci/generate-assets
+        working-directory: mm
+        run: node ./scripts/generate-assets.js
+      - name: ci/import-compass-icon
+        working-directory: mm
+        env:
+          COMPASS_ICONS: "node_modules/@mattermost/compass-icons/font/compass-icons.ttf"
+        run: |
+          cp "$COMPASS_ICONS" "assets/fonts/"
+          cp "$COMPASS_ICONS" "android/app/src/main/assets/fonts"
+      - name: ci/generate-compass-glyph-map
+        working-directory: mm
+        run: node scripts/generate-compass-glyph-map.mjs
       - name: ci/npm-ci-detox
         working-directory: mm/detox
         run: npm ci
