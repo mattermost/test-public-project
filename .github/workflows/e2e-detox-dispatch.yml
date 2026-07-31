@@ -256,7 +256,7 @@ jobs:
   workers-ios:
     name: detox-ios-run-${{ matrix.worker_index }}
     if: inputs.platform == 'ios' || inputs.platform == 'both'
-    runs-on: macos-15 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
+    runs-on: macos-26 # macOS host required for Xcode/simulator. Diverges from mobile's e2e-ios-template.yml, which pins macos-15 due to an unresolved Metro stabilization issue on macos-26 — untested here since this pipeline never builds natively.
     needs: [resolve-run, dispatch-begin-ios]
     timeout-minutes: 90
     strategy:
@@ -488,7 +488,7 @@ jobs:
   workers-ipad:
     name: detox-ipad-run-${{ matrix.worker_index }}
     if: inputs.platform == 'ios' || inputs.platform == 'both'
-    runs-on: macos-15 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
+    runs-on: macos-26 # macOS host required for Xcode/simulator. Diverges from mobile's e2e-ios-template.yml, which pins macos-15 due to an unresolved Metro stabilization issue on macos-26 — untested here since this pipeline never builds natively.
     needs: [resolve-run, dispatch-begin-ipad]
     timeout-minutes: 90
     strategy:
@@ -774,6 +774,12 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      # libpulse0 is the emulator's audio backend dependency (missing on the
+      # standard runner image — causes "error while loading shared libraries:
+      # libpulse.so.0"); scrot/ffmpeg/xvfb match mobile's own
+      # e2e-android-template.yml "Install Dependencies" step.
+      - name: ci/install-android-emulator-deps
+        run: sudo apt-get install -y libpulse0 scrot ffmpeg xvfb
       - name: ci/start-xvfb
         run: |
           Xvfb :99 -screen 0 1920x1080x24 &
