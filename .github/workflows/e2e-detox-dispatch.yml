@@ -317,6 +317,7 @@ jobs:
       - name: ci/install-applesimutils
         run: |
           brew tap wix/brew
+          brew trust --formula wix/brew/applesimutils
           brew install applesimutils
 
       # Finds-or-creates the named device/runtime, then boots it.
@@ -548,6 +549,7 @@ jobs:
       - name: ci/install-applesimutils
         run: |
           brew tap wix/brew
+          brew trust --formula wix/brew/applesimutils
           brew install applesimutils
 
       - name: ci/boot-ipad-simulator
