@@ -1,0 +1,909 @@
+---
+# Dispatch variant of mattermost/mattermost-mobile's Detox E2E pipeline
+# (.github/workflows/e2e-detox-pr.yml -> e2e-detox.yml -> e2e-ios-template.yml /
+# e2e-android-template.yml).
+#
+# Unlike the upstream pipeline, this workflow does NOT build the app. It
+# resolves a mattermost-mobile PR number to the mattermost-mobile "E2E"
+# workflow run that already built it, downloads that run's
+# ios-build-simulator-*/android-build-files-* artifacts, and drives the
+# actual Detox test execution through Test System IO's dispatch actions
+# (begin/checkout/complete) instead of mobile's static spec-count sharding.
+#
+# Replaces:
+#   - generate-specs (split-tests.js) static sharding  -> TSIO dispatch (begin/checkout/complete)
+#   - build-ios-simulator / build-android-apk           -> cross-repo artifact download (see
+#                                                          resolve-run job) from an existing,
+#                                                          already-built mattermost-mobile PR run
+#   - generate-report / tsio-report-status.js           -> test-system-io-summary
+#
+# Authenticates to Test System IO via GitHub Actions OIDC (no api_key secret
+# required) — same convention as e2e-cypress-dispatch.yml /
+# e2e-playwright-dispatch.yml in this repo.
+#
+# Cross-repo artifact download requires a token with `actions: read` on
+# mattermost/mattermost-mobile — this reuses the repo's existing GH_TOKEN
+# secret (see pr-test-analysis.yml). If that secret's scope ever changes,
+# update the `github-token:` references below.
+#
+# test_system_io_actions_ref defaults to 96a7dc24d914b41f5c22428e15c1c1f8b053b8b0
+# ("feat: add detox framework", mattermost-test-system-io PR #94) — the
+# commit that added Detox support to both dispatch actions' src/detox.ts and
+# the server's `detox` framework support. That PR is open, not yet merged to
+# main, but the SHA is immutable so pinning to it directly is safe; bump this
+# default once #94 merges (or sooner, if a later commit on that branch fixes
+# something this workflow needs).
+
+name: E2E - Detox (Test System IO dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "mattermost/mattermost-mobile PR number to test"
+        type: string
+        required: true
+      mobile_run_id:
+        description: >-
+          Override: mattermost-mobile "E2E" workflow run id to pull
+          ios-build-simulator-*/android-build-files-* artifacts from, instead
+          of auto-resolving one from pr_number via commit statuses. Defaults
+          to a known-good historical run (PR #9980) for exercising this
+          pipeline without needing a fresh mattermost-mobile E2E dispatch;
+          clear this to fall back to automatic PR -> run resolution.
+        type: string
+        default: "30513211589"
+      platform:
+        description: "Which platform(s) to test"
+        type: choice
+        options: [ios, android, both]
+        default: both
+      workers:
+        description: "Number of parallel Test System IO dispatch workers, PER platform"
+        type: number
+        default: 2
+      retest_on_fail:
+        description: "Re-dispatch failed dispatch units once"
+        type: boolean
+        default: true
+      test_system_io_use_staging:
+        description: "Target the staging deployment instead of production"
+        type: boolean
+        default: true
+      test_system_io_run_name:
+        description: "Test System IO run name (stable across re-runs of the same workflow)"
+        type: string
+        default: "detox"
+      test_system_io_actions_ref:
+        description: "mattermost/mattermost-test-system-io commit SHA (full 40-char) to source .github/actions/* from — must include Detox support"
+        type: string
+        default: 96a7dc24d914b41f5c22428e15c1c1f8b053b8b0
+      ios_device_name:
+        description: "iOS simulator device name (must match a real xcrun simctl devicetype)"
+        type: string
+        default: "iPhone 17 Pro"
+      ios_device_os_version:
+        description: "iOS simulator runtime version (also used for the iPad leg)"
+        type: string
+        default: "iOS 26.2"
+      ipad_device_name:
+        description: "iPad simulator device name (must match a real xcrun simctl devicetype)"
+        type: string
+        default: "iPad Pro 13-inch (M5)"
+      ipad_workers:
+        description: "Number of parallel Test System IO dispatch workers for the iPad leg — much smaller spec set than the phone leg, matches mobile's parallelism: \"1\" default"
+        type: number
+        default: 1
+      android_avd_name:
+        description: "Android AVD name — must match .detoxrc.json's android.emulator device.avdName"
+        type: string
+        default: "detox_pixel_8_api_35"
+      android_api_level:
+        description: "Android API level for the emulator system image"
+        type: string
+        default: "35"
+      site_1_url:
+        description: "URL of test server 1 (used by both iOS and Android workers)"
+        type: string
+        required: true
+      site_2_url:
+        description: "URL of test server 2 (used by both iOS and Android workers)"
+        type: string
+        required: true
+      site_3_url:
+        description: "URL of the shared third Mattermost test server"
+        type: string
+        required: true
+      admin_email:
+        description: >-
+          Admin email seeded on the target test server(s).
+        type: string
+        default: "sysadmin@sample.mattermost.com"
+      admin_username:
+        description: >-
+          Admin username seeded on the target test server(s).
+        type: string
+        default: "sysadmin"
+      admin_password:
+        description: >-
+          Admin password seeded on the target test server(s).
+        type: string
+        default: "Sys@dmin-sample1"
+
+permissions:
+  contents: read
+  id-token: write # needed to mint GitHub Actions OIDC tokens for Test System IO auth
+
+env:
+  TEST_SYSTEM_IO_USE_STAGING: ${{ inputs.test_system_io_use_staging }}
+  TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
+  MOBILE_REPO: mattermost/mattermost-mobile
+  # test-system-io-summary hard-requires commit-status-context even when
+  # update-commit-status is "false" (see e2e-cypress-dispatch.yml's header
+  # comment) — this workflow doesn't grant `permissions: statuses: write`,
+  # so the value is only ever used as a label, never posted anywhere.
+  TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IOS: e2e-test/detox-ios
+  TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IPAD: e2e-test/detox-ipad
+  TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_ANDROID: e2e-test/detox-android
+
+jobs:
+  # Resolves the mattermost-mobile PR number to a head SHA + the "E2E"
+  # workflow run that already built ios-build-simulator-*/android-build-files-*
+  # for that commit, since this pipeline skips the build step entirely.
+  resolve-run:
+    name: resolve-mobile-pr-run
+    runs-on: ubuntu-24.04
+    outputs:
+      mobile-sha: ${{ steps.resolve.outputs.mobile-sha }}
+      mobile-branch: ${{ steps.resolve.outputs.mobile-branch }}
+      mobile-run-id: ${{ steps.resolve.outputs.mobile-run-id }}
+      workers-matrix: ${{ steps.matrix.outputs.workers }}
+      ipad-workers-matrix: ${{ steps.matrix.outputs.ipad-workers }}
+    steps:
+      - name: ci/resolve-mobile-pr-and-run
+        id: resolve
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MOBILE_RUN_ID_OVERRIDE: ${{ inputs.mobile_run_id }}
+        with:
+          github-token: ${{ secrets.GH_TOKEN }}
+          script: |
+            const owner = 'mattermost';
+            const repo = 'mattermost-mobile';
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            if (!Number.isFinite(prNumber)) {
+              core.setFailed(`pr_number must be a number, got "${process.env.PR_NUMBER}"`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const sha = pr.head.sha;
+            core.setOutput('mobile-sha', sha);
+            core.setOutput('mobile-branch', `pr-${prNumber}`);
+            core.info(`PR #${prNumber} head SHA: ${sha}`);
+
+            const override = (process.env.MOBILE_RUN_ID_OVERRIDE || '').trim();
+            if (override) {
+              core.info(`Using explicit mobile_run_id override: ${override}`);
+              core.setOutput('mobile-run-id', override);
+              return;
+            }
+
+            // mattermost-mobile's real E2E workflow (e2e-detox-pr.yml's
+            // update-initial-tsio-status job) posts commit statuses on the
+            // tested commit (inputs.MOBILE_VERSION == this PR's head SHA)
+            // whose target_url deep-links to that run. This is the only
+            // reliable anchor back to a run_id: a workflow_dispatch run's own
+            // head_sha is the ref the *workflow file* was dispatched
+            // against (normally main), not the commit under test.
+            const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({
+              owner, repo, ref: sha, per_page: 100,
+            });
+            const runUrlRe = new RegExp(`${owner}/${repo}/actions/runs/(\\d+)`);
+            const withRun = statuses
+              .map((s) => ({ s, m: (s.target_url || '').match(runUrlRe) }))
+              .filter((x) => x.m);
+            if (withRun.length === 0) {
+              core.setFailed(
+                `No commit status on ${sha} links to an actions/runs/<id> URL — could not resolve ` +
+                `which mattermost-mobile E2E run built the artifacts for PR #${prNumber}. Trigger E2E ` +
+                `for this PR first (e.g. the E2E/Run label), or pass mobile_run_id explicitly.`,
+              );
+              return;
+            }
+            // listCommitStatusesForRef returns most-recent-first.
+            const runId = withRun[0].m[1];
+            core.info(`Resolved mattermost-mobile E2E run ${runId} from commit status "${withRun[0].s.context}"`);
+            core.setOutput('mobile-run-id', runId);
+      - name: ci/matrix
+        id: matrix
+        run: |
+          echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
+          echo "ipad-workers=$(jq -nc --argjson n ${{ inputs.ipad_workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
+
+  # ─── iOS ────────────────────────────────────────────────────────────────
+
+  dispatch-begin-ios:
+    name: dispatch-begin (iOS)
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: ubuntu-24.04
+    needs: resolve-run
+    outputs:
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/composite-identity
+        id: composite-identity
+        env:
+          MOBILE_SHA: ${{ needs.resolve-run.outputs.mobile-sha }}
+          MOBILE_BRANCH: ${{ needs.resolve-run.outputs.mobile-branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          COMPOSITE_IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MOBILE_REPO }}" \
+            --arg sha "${MOBILE_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}-ios" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${MOBILE_BRANCH}" \
+            --argjson pr "${PR_NUMBER}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch, gh_pr_number:$pr}')
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-begin
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: detox
+          repo-dir: ${{ github.workspace }}/mm
+          detox-dir: detox
+          detox-search-path: e2e/test
+          detox-exclude-dir: ipad
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          post-pending-commit-status: "false"
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers-ios:
+    name: detox-ios-run-${{ matrix.worker_index }}
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: macOS-26-arm64 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
+    needs: [resolve-run, dispatch-begin-ios]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.resolve-run.outputs.workers-matrix) }}
+    env:
+      IOS: "true"
+      SITE_1_URL: ${{ inputs.site_1_url }}
+      SITE_2_URL: ${{ inputs.site_2_url }}
+      SITE_3_URL: ${{ inputs.site_3_url }}
+      ADMIN_EMAIL: ${{ inputs.admin_email }}
+      ADMIN_USERNAME: ${{ inputs.admin_username }}
+      ADMIN_PASSWORD: ${{ inputs.admin_password }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+
+      - name: ci/download-ios-build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios-build-simulator-${{ needs.resolve-run.outputs.mobile-run-id }}
+          repository: ${{ env.MOBILE_REPO }}
+          run-id: ${{ needs.resolve-run.outputs.mobile-run-id }}
+          github-token: ${{ secrets.GH_TOKEN }}
+          path: mm/mobile-artifacts
+      - name: ci/unzip-ios-build
+        working-directory: mm/mobile-artifacts
+        run: |
+          unzip -o Mattermost-simulator-*.app.zip -d .
+          rm -f Mattermost-simulator-*.app.zip
+          ls -la
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+      - name: ci/npm-ci-root
+        working-directory: mm
+        run: npm ci
+      - name: ci/npm-ci-detox
+        working-directory: mm/detox
+        run: npm ci
+
+      # Simplified from e2e-ios-template.yml's "Pre-boot iOS Simulator" —
+      # finds-or-creates the named device/runtime, boots it, skips the
+      # autofill-disable/pre-warm perf-only steps.
+      - name: ci/boot-ios-simulator
+        id: sim
+        env:
+          DEVICE_NAME: ${{ inputs.ios_device_name }}
+          DEVICE_OS_VERSION: ${{ inputs.ios_device_os_version }}
+        run: |
+          SIMULATOR_ID=$(xcrun simctl list devices | grep "$DEVICE_NAME" | grep "$DEVICE_OS_VERSION" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}' | head -1 || true)
+          if [ -z "$SIMULATOR_ID" ]; then
+            DEVICE_TYPE=$(xcrun simctl list devicetypes | grep "$DEVICE_NAME (" | head -1 | awk -F'[()]' '{print $(NF-1)}')
+            RUNTIME=$(xcrun simctl list runtimes | grep "$DEVICE_OS_VERSION" | head -1 | sed 's/.* - \(.*\)/\1/')
+            SIMULATOR_ID=$(xcrun simctl create "CI-$DEVICE_NAME" "$DEVICE_TYPE" "$RUNTIME")
+          fi
+          xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
+          echo "simulator-id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
+      - name: ci/install-ios-app
+        run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
+
+      # Pins .detoxrc.json's ios.simulator/ios.ipad device entries to the
+      # exact booted simulator (reuses mobile's own script — see
+      # detox/utils/generate_detox_config_ci.js) so Detox never creates its
+      # own "-Detox" clone, which wouldn't have the app installed.
+      - name: ci/generate-detox-config
+        working-directory: mm/detox
+        env:
+          SIMULATOR_ID: ${{ steps.sim.outputs.simulator-id }}
+        run: npm run detox:config-gen
+
+      - name: ci/start-metro
+        working-directory: mm
+        run: |
+          npm run start > metro.log 2>&1 &
+          echo "METRO_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -s http://localhost:8081/status 2>/dev/null | grep -q "packager-status:running"; then
+              echo "Metro ready after ${i}0s"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-run
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-run
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: detox
+          composite-identity: ${{ needs.dispatch-begin-ios.outputs.composite-identity-json }}
+          repo-dir: ${{ github.workspace }}/mm
+          detox-dir: detox
+          detox-config: ios.sim.debug
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-job-name: detox-ios-run-${{ matrix.worker_index }}
+
+      - name: ci/cleanup-simulator
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [ -n "$METRO_PID" ]; then
+            kill -9 -"$METRO_PID" 2>/dev/null || true
+            pkill -9 -f "react-native.*start" 2>/dev/null || true
+            pkill -9 -f "metro" 2>/dev/null || true
+          fi
+          xcrun simctl shutdown "${{ steps.sim.outputs.simulator-id }}" 2>/dev/null || true
+
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: detox-ios-run-${{ matrix.worker_index }}-debug
+          path: |
+            mm/detox/artifacts/
+            mm/metro.log
+            worker-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  report-ios:
+    name: report (iOS)
+    if: always() && (inputs.platform == 'ios' || inputs.platform == 'both')
+    runs-on: ubuntu-24.04
+    needs: [dispatch-begin-ios, workers-ios]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/run-summary
+        uses: ./tsio-actions/.github/actions/test-system-io-summary
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          composite-identity: ${{ needs.dispatch-begin-ios.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IOS }}
+          update-commit-status: "false"
+          framework: detox
+
+  # ─── iPad ───────────────────────────────────────────────────────────────
+  # Same leg as mobile's e2e-detox.yml's run-ios-ipad-tests: gated on the
+  # `ios`/`both` platform choice (there's no separate `ipad` platform
+  # option), narrower search path (already scoped inside e2e/test/products/
+  # channels/ipad so detox-exclude-dir is disabled), its own much smaller
+  # worker count, and detox-config: ios.ipad.debug instead of ios.sim.debug.
+
+  dispatch-begin-ipad:
+    name: dispatch-begin (iPad)
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: ubuntu-24.04
+    needs: resolve-run
+    outputs:
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/composite-identity
+        id: composite-identity
+        env:
+          MOBILE_SHA: ${{ needs.resolve-run.outputs.mobile-sha }}
+          MOBILE_BRANCH: ${{ needs.resolve-run.outputs.mobile-branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          COMPOSITE_IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MOBILE_REPO }}" \
+            --arg sha "${MOBILE_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}-ipad" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${MOBILE_BRANCH}" \
+            --argjson pr "${PR_NUMBER}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch, gh_pr_number:$pr}')
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-begin
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: detox
+          repo-dir: ${{ github.workspace }}/mm
+          detox-dir: detox
+          detox-search-path: e2e/test/products/channels/ipad
+          detox-exclude-dir: ""
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          post-pending-commit-status: "false"
+          total-reports-expected: ${{ inputs.ipad_workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers-ipad:
+    name: detox-ipad-run-${{ matrix.worker_index }}
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: macOS-26-arm64 # macOS host required for Xcode/simulator, matches mobile's e2e-ios-template.yml
+    needs: [resolve-run, dispatch-begin-ipad]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.resolve-run.outputs.ipad-workers-matrix) }}
+    env:
+      IOS: "true"
+      SITE_1_URL: ${{ inputs.site_1_url }}
+      SITE_2_URL: ${{ inputs.site_2_url }}
+      SITE_3_URL: ${{ inputs.site_3_url }}
+      ADMIN_EMAIL: ${{ inputs.admin_email }}
+      ADMIN_USERNAME: ${{ inputs.admin_username }}
+      ADMIN_PASSWORD: ${{ inputs.admin_password }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+
+      - name: ci/download-ios-build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios-build-simulator-${{ needs.resolve-run.outputs.mobile-run-id }}
+          repository: ${{ env.MOBILE_REPO }}
+          run-id: ${{ needs.resolve-run.outputs.mobile-run-id }}
+          github-token: ${{ secrets.GH_TOKEN }}
+          path: mm/mobile-artifacts
+      - name: ci/unzip-ios-build
+        working-directory: mm/mobile-artifacts
+        run: |
+          unzip -o Mattermost-simulator-*.app.zip -d .
+          rm -f Mattermost-simulator-*.app.zip
+          ls -la
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+      - name: ci/npm-ci-root
+        working-directory: mm
+        run: npm ci
+      - name: ci/npm-ci-detox
+        working-directory: mm/detox
+        run: npm ci
+
+      - name: ci/boot-ipad-simulator
+        id: sim
+        env:
+          DEVICE_NAME: ${{ inputs.ipad_device_name }}
+          DEVICE_OS_VERSION: ${{ inputs.ios_device_os_version }}
+        run: |
+          SIMULATOR_ID=$(xcrun simctl list devices | grep "$DEVICE_NAME" | grep "$DEVICE_OS_VERSION" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}' | head -1 || true)
+          if [ -z "$SIMULATOR_ID" ]; then
+            DEVICE_TYPE=$(xcrun simctl list devicetypes | grep "$DEVICE_NAME (" | head -1 | awk -F'[()]' '{print $(NF-1)}')
+            RUNTIME=$(xcrun simctl list runtimes | grep "$DEVICE_OS_VERSION" | head -1 | sed 's/.* - \(.*\)/\1/')
+            SIMULATOR_ID=$(xcrun simctl create "CI-$DEVICE_NAME" "$DEVICE_TYPE" "$RUNTIME")
+          fi
+          xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
+          echo "simulator-id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
+      - name: ci/install-ipad-app
+        run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
+
+      # Pins .detoxrc.json's ios.simulator/ios.ipad device entries to the
+      # exact booted simulator (reuses mobile's own script — see
+      # detox/utils/generate_detox_config_ci.js) so Detox never creates its
+      # own "-Detox" clone, which wouldn't have the app installed.
+      - name: ci/generate-detox-config
+        working-directory: mm/detox
+        env:
+          SIMULATOR_ID: ${{ steps.sim.outputs.simulator-id }}
+        run: npm run detox:config-gen
+
+      - name: ci/start-metro
+        working-directory: mm
+        run: |
+          npm run start > metro.log 2>&1 &
+          echo "METRO_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -s http://localhost:8081/status 2>/dev/null | grep -q "packager-status:running"; then
+              echo "Metro ready after ${i}0s"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-run
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-run
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: detox
+          composite-identity: ${{ needs.dispatch-begin-ipad.outputs.composite-identity-json }}
+          repo-dir: ${{ github.workspace }}/mm
+          detox-dir: detox
+          detox-config: ios.ipad.debug
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-job-name: detox-ipad-run-${{ matrix.worker_index }}
+
+      - name: ci/cleanup-simulator
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [ -n "$METRO_PID" ]; then
+            kill -9 -"$METRO_PID" 2>/dev/null || true
+            pkill -9 -f "react-native.*start" 2>/dev/null || true
+            pkill -9 -f "metro" 2>/dev/null || true
+          fi
+          xcrun simctl shutdown "${{ steps.sim.outputs.simulator-id }}" 2>/dev/null || true
+
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: detox-ipad-run-${{ matrix.worker_index }}-debug
+          path: |
+            mm/detox/artifacts/
+            mm/metro.log
+            worker-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  report-ipad:
+    name: report (iPad)
+    if: always() && (inputs.platform == 'ios' || inputs.platform == 'both')
+    runs-on: ubuntu-24.04
+    needs: [dispatch-begin-ipad, workers-ipad]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/run-summary
+        uses: ./tsio-actions/.github/actions/test-system-io-summary
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          composite-identity: ${{ needs.dispatch-begin-ipad.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IPAD }}
+          update-commit-status: "false"
+          framework: detox
+
+  # ─── Android ────────────────────────────────────────────────────────────
+
+  dispatch-begin-android:
+    name: dispatch-begin (Android)
+    if: inputs.platform == 'android' || inputs.platform == 'both'
+    runs-on: ubuntu-24.04
+    needs: resolve-run
+    outputs:
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/composite-identity
+        id: composite-identity
+        env:
+          MOBILE_SHA: ${{ needs.resolve-run.outputs.mobile-sha }}
+          MOBILE_BRANCH: ${{ needs.resolve-run.outputs.mobile-branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          COMPOSITE_IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MOBILE_REPO }}" \
+            --arg sha "${MOBILE_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}-android" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${MOBILE_BRANCH}" \
+            --argjson pr "${PR_NUMBER}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch, gh_pr_number:$pr}')
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-begin
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: detox
+          repo-dir: ${{ github.workspace }}/mm
+          detox-dir: detox
+          detox-search-path: e2e/test
+          detox-exclude-dir: ipad
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          post-pending-commit-status: "false"
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers-android:
+    name: detox-android-run-${{ matrix.worker_index }}
+    if: inputs.platform == 'android' || inputs.platform == 'both'
+    runs-on: ubuntu-latest-8-cores # KVM-capable, matches mobile's e2e-android-template.yml
+    needs: [resolve-run, dispatch-begin-android]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.resolve-run.outputs.workers-matrix) }}
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      SITE_1_URL: ${{ inputs.site_1_url }}
+      SITE_2_URL: ${{ inputs.site_2_url }}
+      SITE_3_URL: ${{ inputs.site_3_url }}
+      ADMIN_EMAIL: ${{ inputs.admin_email }}
+      ADMIN_USERNAME: ${{ inputs.admin_username }}
+      ADMIN_PASSWORD: ${{ inputs.admin_password }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+
+      - name: ci/download-android-build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: android-build-files-${{ needs.resolve-run.outputs.mobile-run-id }}
+          repository: ${{ env.MOBILE_REPO }}
+          run-id: ${{ needs.resolve-run.outputs.mobile-run-id }}
+          github-token: ${{ secrets.GH_TOKEN }}
+          # Matches .detoxrc.json's android.debug binaryPath
+          # (../android/app/build/outputs/apk/debug/app-debug.apk) — the
+          # upload preserved the outputs/** subtree, download reconstructs
+          # it under this path.
+          path: mm/android/app/build
+
+      - name: ci/enable-kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: ci/start-xvfb
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+      - name: ci/accept-android-licenses
+        run: yes | sdkmanager --licenses || true
+      - name: ci/install-android-system-image
+        env:
+          API_LEVEL: ${{ inputs.android_api_level }}
+        run: |
+          sdkmanager --install "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "system-images;android-${API_LEVEL};google_apis;x86_64"
+
+      # Simplified from mobile's detox/create_android_emulator.sh — creates
+      # the named AVD (must match .detoxrc.json's android.emulator
+      # device.avdName, default detox_pixel_8_api_35), boots it in the
+      # background so it stays up across the remaining steps in this job,
+      # and waits for full boot.
+      - name: ci/create-and-boot-android-emulator
+        env:
+          AVD_NAME: ${{ inputs.android_avd_name }}
+          API_LEVEL: ${{ inputs.android_api_level }}
+        run: |
+          echo "no" | avdmanager create avd -n "$AVD_NAME" -k "system-images;android-${API_LEVEL};google_apis;x86_64" -d "pixel_4_xl" --force
+          "$ANDROID_HOME/emulator/emulator" -avd "$AVD_NAME" -no-snapshot -no-snapshot-load -no-snapshot-save \
+            -no-boot-anim -no-audio -gpu swiftshader_indirect -accel on -no-window -qemu -m 3072 &
+          echo "EMULATOR_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            adb devices | grep -qE '^emulator-[0-9]+\s+device' && break
+            sleep 2
+          done
+          for i in $(seq 1 150); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 2
+          done
+          sleep 30 # API 35 emulators take longer to stabilize the instrumentation layer
+
+      - name: ci/install-android-apks
+        run: |
+          adb install -r mm/android/app/build/outputs/apk/debug/app-debug.apk
+          adb install -r mm/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          adb shell pm grant com.mattermost.rnbeta android.permission.POST_NOTIFICATIONS || true
+          adb shell pm grant com.mattermost.rnbeta android.permission.RECORD_AUDIO || true
+          adb shell pm grant com.mattermost.rnbeta android.permission.CAMERA || true
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: mm/.nvmrc
+      - name: ci/npm-ci-root
+        working-directory: mm
+        run: npm ci
+      - name: ci/npm-ci-detox
+        working-directory: mm/detox
+        run: npm ci
+
+      - name: ci/start-metro
+        working-directory: mm
+        run: |
+          npm run start > metro.log 2>&1 &
+          echo "METRO_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            if curl -s http://localhost:8081/status 2>/dev/null | grep -q "packager-status:running"; then
+              echo "Metro ready after ${i}0s"
+              break
+            fi
+            sleep 2
+          done
+      - name: ci/adb-reverse-metro
+        # adb root (implicitly run by some emulator setups) restarts adbd and
+        # drops prior reverse mappings, so this runs after Metro is up. Only
+        # Metro needs this — the SITE_*_URL test servers are real routable
+        # https URLs, not localhost, so no host<->emulator aliasing is needed
+        # for those (unlike a local dev-server setup).
+        run: |
+          adb reverse --remove-all 2>/dev/null || true
+          adb reverse tcp:8081 tcp:8081
+          adb reverse --list | grep -q 'tcp:8081'
+
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-run
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-run
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: detox
+          composite-identity: ${{ needs.dispatch-begin-android.outputs.composite-identity-json }}
+          repo-dir: ${{ github.workspace }}/mm
+          detox-dir: detox
+          detox-config: android.emu.debug
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-job-name: detox-android-run-${{ matrix.worker_index }}
+
+      - name: ci/cleanup-emulator
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [ -n "$METRO_PID" ]; then
+            kill -9 -"$METRO_PID" 2>/dev/null || true
+            pkill -9 -f "react-native.*start" 2>/dev/null || true
+            pkill -9 -f "metro" 2>/dev/null || true
+          fi
+          adb -s emulator-5554 emu kill 2>/dev/null || true
+          pkill -9 -f qemu-system 2>/dev/null || true
+
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: detox-android-run-${{ matrix.worker_index }}-debug
+          path: |
+            mm/detox/artifacts/
+            mm/metro.log
+            worker-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  report-android:
+    name: report (Android)
+    if: always() && (inputs.platform == 'android' || inputs.platform == 'both')
+    runs-on: ubuntu-24.04
+    needs: [dispatch-begin-android, workers-android]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/run-summary
+        uses: ./tsio-actions/.github/actions/test-system-io-summary
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          composite-identity: ${{ needs.dispatch-begin-android.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_ANDROID }}
+          update-commit-status: "false"
+          framework: detox
