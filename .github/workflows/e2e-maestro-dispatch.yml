@@ -120,20 +120,32 @@ on:
         description: "URL of the Mattermost test server for the Android leg."
         type: string
         required: true
-      admin_email:
+      ios_admin_email:
         description: >-
-          Admin email seeded on the target test server. Also used to seed
-          the Maestro test team/channel/user via fixtures/seed.ts.
+          Admin email on the iOS leg's test server (ios_site_url). Also used
+          to seed the Maestro test team/channel/user via fixtures/seed.ts.
+          Split per platform — ephemeral test-server instances can mint
+          distinct admin credentials.
         type: string
         default: "sysadmin@sample.mattermost.com"
-      admin_username:
-        description: >-
-          Admin username seeded on the target test server.
+      ios_admin_username:
+        description: "Admin username on the iOS leg's test server (ios_site_url)."
         type: string
         default: "sysadmin"
-      admin_password:
-        description: >-
-          Admin password seeded on the target test server.
+      ios_admin_password:
+        description: "Admin password on the iOS leg's test server (ios_site_url)."
+        type: string
+        default: "Sys@dmin-sample1"
+      android_admin_email:
+        description: "Admin email on the Android leg's test server (android_site_url)."
+        type: string
+        default: "sysadmin@sample.mattermost.com"
+      android_admin_username:
+        description: "Admin username on the Android leg's test server (android_site_url)."
+        type: string
+        default: "sysadmin"
+      android_admin_password:
+        description: "Admin password on the Android leg's test server (android_site_url)."
         type: string
         default: "Sys@dmin-sample1"
 
@@ -355,9 +367,9 @@ jobs:
           npx tsx fixtures/seed.ts
         env:
           SITE_1_URL: ${{ inputs.ios_site_url }}
-          ADMIN_EMAIL: ${{ inputs.admin_email }}
-          ADMIN_USERNAME: ${{ inputs.admin_username }}
-          ADMIN_PASSWORD: ${{ inputs.admin_password }}
+          ADMIN_EMAIL: ${{ inputs.ios_admin_email }}
+          ADMIN_USERNAME: ${{ inputs.ios_admin_username }}
+          ADMIN_PASSWORD: ${{ inputs.ios_admin_password }}
       # fixtures/seed.ts writes .maestro-test-env.sh with the seeded
       # credentials; export them to $GITHUB_ENV so the dispatch-run step
       # below (a separate process, not this shell) can reference them.
@@ -612,9 +624,9 @@ jobs:
           npx tsx fixtures/seed.ts
         env:
           SITE_1_URL: ${{ inputs.android_site_url }}
-          ADMIN_EMAIL: ${{ inputs.admin_email }}
-          ADMIN_USERNAME: ${{ inputs.admin_username }}
-          ADMIN_PASSWORD: ${{ inputs.admin_password }}
+          ADMIN_EMAIL: ${{ inputs.android_admin_email }}
+          ADMIN_USERNAME: ${{ inputs.android_admin_username }}
+          ADMIN_PASSWORD: ${{ inputs.android_admin_password }}
       - name: ci/export-maestro-test-env
         working-directory: mm
         run: |
