@@ -108,8 +108,16 @@ on:
         description: "Android API level for the emulator system image"
         type: string
         default: "35"
-      site_1_url:
-        description: "URL of the Mattermost test server"
+      ios_site_url:
+        description: >-
+          URL of the Mattermost test server for the iOS leg. Separate from
+          android_site_url so each platform's fixtures/seed.ts run (team/
+          channel/user creation) doesn't collide with the other's on a
+          shared server.
+        type: string
+        required: true
+      android_site_url:
+        description: "URL of the Mattermost test server for the Android leg."
         type: string
         required: true
       admin_email:
@@ -346,7 +354,7 @@ jobs:
           npm ci --prefer-offline --no-audit --no-fund
           npx tsx fixtures/seed.ts
         env:
-          SITE_1_URL: ${{ inputs.site_1_url }}
+          SITE_1_URL: ${{ inputs.ios_site_url }}
           ADMIN_EMAIL: ${{ inputs.admin_email }}
           ADMIN_USERNAME: ${{ inputs.admin_username }}
           ADMIN_PASSWORD: ${{ inputs.admin_password }}
@@ -385,7 +393,7 @@ jobs:
           maestro-dir: detox/maestro
           maestro-device: ${{ steps.sim.outputs.simulator-id }}
           maestro-env: |
-            SITE_1_URL=${{ inputs.site_1_url }}
+            SITE_1_URL=${{ inputs.ios_site_url }}
             TEST_USER_EMAIL=${{ env.TEST_USER_EMAIL }}
             TEST_USER_PASSWORD=${{ env.TEST_USER_PASSWORD }}
             TEST_CHANNEL_NAME=${{ env.TEST_CHANNEL_NAME }}
@@ -603,7 +611,7 @@ jobs:
           npm ci --prefer-offline --no-audit --no-fund
           npx tsx fixtures/seed.ts
         env:
-          SITE_1_URL: ${{ inputs.site_1_url }}
+          SITE_1_URL: ${{ inputs.android_site_url }}
           ADMIN_EMAIL: ${{ inputs.admin_email }}
           ADMIN_USERNAME: ${{ inputs.admin_username }}
           ADMIN_PASSWORD: ${{ inputs.admin_password }}
@@ -639,7 +647,7 @@ jobs:
           maestro-dir: detox/maestro
           maestro-platform: android
           maestro-env: |
-            SITE_1_URL=${{ inputs.site_1_url }}
+            SITE_1_URL=${{ inputs.android_site_url }}
             TEST_USER_EMAIL=${{ env.TEST_USER_EMAIL }}
             TEST_USER_PASSWORD=${{ env.TEST_USER_PASSWORD }}
             TEST_CHANNEL_NAME=${{ env.TEST_CHANNEL_NAME }}
