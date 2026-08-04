@@ -338,6 +338,12 @@ jobs:
           export MAESTRO_VERSION
           curl -fsSL "https://get.maestro.mobile.dev" | bash
           "$HOME/.maestro/bin/maestro" --version
+      # Unconditional (not gated on cache-miss): the installer doesn't add
+      # itself to PATH, and dispatch-run's maestro.ts invokes a bare
+      # `maestro` — without this, every invocation fails with spawnSync
+      # ENOENT, cache hit or not.
+      - name: ci/add-maestro-to-path
+        run: echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       # Finds-or-creates the named device/runtime, then boots it — same
       # sequence as e2e-detox-dispatch.yml's workers-ios job.
@@ -560,6 +566,12 @@ jobs:
           export MAESTRO_VERSION
           curl -fsSL "https://get.maestro.mobile.dev" | bash
           "$HOME/.maestro/bin/maestro" --version
+      # Unconditional (not gated on cache-miss): the installer doesn't add
+      # itself to PATH, and dispatch-run's maestro.ts invokes a bare
+      # `maestro` — without this, every invocation fails with spawnSync
+      # ENOENT, cache hit or not.
+      - name: ci/add-maestro-to-path
+        run: echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       # sdkmanager exists on the runner image but its cmdline-tools/latest/bin
       # dir isn't on PATH by default in a job step's shell.
