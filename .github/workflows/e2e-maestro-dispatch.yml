@@ -1,0 +1,693 @@
+---
+# Dispatch variant of mattermost-mobile's Maestro E2E pipeline
+# (e2e-detox-pr.yml -> e2e-maestro-pr.yml -> e2e-maestro-template.yml), minus
+# the build step: resolves a mattermost-mobile PR to the "E2E" run that
+# already built it, downloads its build artifacts, and drives Maestro via
+# Test System IO dispatch (begin/checkout/complete) instead of mobile's own
+# sequential run_ci_batches.sh loop. Sibling to e2e-detox-dispatch.yml —
+# same PR/run resolution, same OIDC auth model.
+#
+# Key differences from Detox, worth knowing before touching this file:
+#   - Android uses a SEPARATE, smaller build artifact:
+#     `android-maestro-build-files-<run_id>` (a release APK with an embedded
+#     JS bundle — see mattermost-mobile's build-android-maestro-apk action),
+#     NOT the `android-build-files-<run_id>` Detox debug+androidTest build.
+#     iOS reuses the SAME `ios-build-simulator-<run_id>` artifact as Detox.
+#   - Neither platform needs Metro: the iOS build (same as Detox's) still
+#     works without it for Maestro's driver, and Android's release build has
+#     the JS bundle embedded. Confirmed by grep — mattermost-mobile's own
+#     e2e-maestro-template.yml has zero Metro references anywhere.
+#   - Maestro flows template `${SITE_1_URL}`, `${TEST_USER_EMAIL}`, etc. —
+#     the CLI only resolves those from explicit `--env KEY=VALUE` flags, not
+#     ambient shell env. dispatch-run's `maestro-env` input (multi-line
+#     KEY=VALUE) forwards them per invocation. Test credentials come from
+#     `detox/maestro/fixtures/seed.ts`, which seeds a team/channel/user
+#     against the target server and writes `.maestro-test-env.sh` — sourced
+#     here and exported to $GITHUB_ENV so dispatch-run's `with:` block can
+#     reference them.
+#   - Known gaps vs. mattermost-mobile's full CI (acceptable for validating
+#     the dispatch mechanism itself, not full-suite fidelity): no iOS
+#     Info.plist file-sharing patch or fixture-image push (channel_bookmark_*
+#     flows will fail), no simulator timezone setup (clock_display will
+#     fail), no MM-T67856_4 isolated AllowDownloadLogs flow, no Zephyr
+#     recording. `maestro-exclude-dir: multi_device` still applies (those
+#     flows need two devices, same reason Detox excludes them).
+#
+# Auth: GitHub Actions OIDC, same as e2e-detox-dispatch.yml. Cross-repo
+# artifact download needs a token with `actions: read` on mattermost-mobile
+# — reuses the repo's GH_TOKEN secret.
+#
+# test_system_io_actions_ref defaults to c1332726bfb195161db56dc1b178429a38694409
+# (mattermost-test-system-io PR #102, "add maestro-env input and parsing
+# functionality" — not yet merged, but the SHA is immutable so pinning to it
+# is safe). Includes the `maestro-env` input the dispatch-run steps below
+# rely on. Bump once #102 merges.
+
+name: E2E - Maestro (Test System IO dispatch)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "mattermost/mattermost-mobile PR number to test"
+        type: string
+        required: true
+      mobile_run_id:
+        description: >-
+          Override: mattermost-mobile "E2E" workflow run id to pull
+          ios-build-simulator-*/android-maestro-build-files-* artifacts
+          from, instead of auto-resolving one from pr_number via commit
+          statuses. Defaults to a known-good historical run (PR #9980) for
+          exercising this pipeline without needing a fresh mattermost-mobile
+          E2E dispatch; clear this to fall back to automatic PR -> run
+          resolution.
+        type: string
+        default: "30513211589"
+      platform:
+        description: "Which platform(s) to test"
+        type: choice
+        options: [ios, android, both]
+        default: both
+      workers:
+        description: >-
+          Number of parallel Test System IO dispatch workers, PER platform.
+          mattermost-mobile's own Maestro CI runs flows sequentially in one
+          job — this pipeline's whole point is proving out real parallelism
+          via begin/checkout/complete.
+        type: number
+        default: 2
+      retest_on_fail:
+        description: "Re-dispatch failed dispatch units once"
+        type: boolean
+        default: true
+      test_system_io_use_staging:
+        description: "Target the staging deployment instead of production"
+        type: boolean
+        default: true
+      test_system_io_run_name:
+        description: "Test System IO run name (stable across re-runs of the same workflow)"
+        type: string
+        default: "maestro"
+      test_system_io_actions_ref:
+        description: "mattermost/mattermost-test-system-io commit SHA (full 40-char) to source .github/actions/* from — must include Maestro support + maestro-env"
+        type: string
+        default: c1332726bfb195161db56dc1b178429a38694409
+      ios_device_name:
+        description: "iOS simulator device name (must match a real xcrun simctl devicetype)"
+        type: string
+        default: "iPhone 17 Pro"
+      ios_device_os_version:
+        description: "iOS simulator runtime version"
+        type: string
+        default: "iOS 26.2"
+      android_avd_name:
+        description: "Android AVD name — must match .detoxrc.json's android.emulator device.avdName"
+        type: string
+        default: "detox_pixel_8_api_35"
+      android_api_level:
+        description: "Android API level for the emulator system image"
+        type: string
+        default: "35"
+      site_1_url:
+        description: "URL of the Mattermost test server"
+        type: string
+        required: true
+      admin_email:
+        description: >-
+          Admin email seeded on the target test server. Also used to seed
+          the Maestro test team/channel/user via fixtures/seed.ts.
+        type: string
+        default: "sysadmin@sample.mattermost.com"
+      admin_username:
+        description: >-
+          Admin username seeded on the target test server.
+        type: string
+        default: "sysadmin"
+      admin_password:
+        description: >-
+          Admin password seeded on the target test server.
+        type: string
+        default: "Sys@dmin-sample1"
+
+permissions:
+  contents: read
+  id-token: write # needed to mint GitHub Actions OIDC tokens for Test System IO auth
+
+env:
+  TEST_SYSTEM_IO_USE_STAGING: ${{ inputs.test_system_io_use_staging }}
+  TEST_SYSTEM_IO_RUN_NAME: ${{ inputs.test_system_io_run_name }}
+  MOBILE_REPO: mattermost/mattermost-mobile
+  # test-system-io-summary requires commit-status-context even with
+  # update-commit-status: "false" — unused here since statuses:write isn't granted.
+  TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IOS: e2e-test/maestro-ios
+  TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_ANDROID: e2e-test/maestro-android
+
+jobs:
+  # Resolves the PR to a head SHA + the "E2E" run that already built its artifacts.
+  # Identical to e2e-detox-dispatch.yml's resolve-run — same run builds both
+  # Detox's and Maestro's artifacts.
+  resolve-run:
+    name: resolve-mobile-pr-run
+    runs-on: ubuntu-24.04
+    outputs:
+      mobile-sha: ${{ steps.resolve.outputs.mobile-sha }}
+      mobile-branch: ${{ steps.resolve.outputs.mobile-branch }}
+      mobile-run-id: ${{ steps.resolve.outputs.mobile-run-id }}
+      workers-matrix: ${{ steps.matrix.outputs.workers }}
+    steps:
+      - name: ci/resolve-mobile-pr-and-run
+        id: resolve
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MOBILE_RUN_ID_OVERRIDE: ${{ inputs.mobile_run_id }}
+        with:
+          github-token: ${{ secrets.GH_TOKEN }}
+          script: |
+            const owner = 'mattermost';
+            const repo = 'mattermost-mobile';
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            if (!Number.isFinite(prNumber)) {
+              core.setFailed(`pr_number must be a number, got "${process.env.PR_NUMBER}"`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const sha = pr.head.sha;
+            core.setOutput('mobile-sha', sha);
+            core.setOutput('mobile-branch', `pr-${prNumber}`);
+            core.info(`PR #${prNumber} head SHA: ${sha}`);
+
+            const override = (process.env.MOBILE_RUN_ID_OVERRIDE || '').trim();
+            if (override) {
+              core.info(`Using explicit mobile_run_id override: ${override}`);
+              core.setOutput('mobile-run-id', override);
+              return;
+            }
+
+            // mattermost-mobile posts a commit status on the tested SHA whose
+            // target_url points at the E2E run — the only reliable way back to
+            // a run_id, since a workflow_dispatch run's head_sha is the ref the
+            // *workflow file* was dispatched against, not the commit under test.
+            const { data: statuses } = await github.rest.repos.listCommitStatusesForRef({
+              owner, repo, ref: sha, per_page: 100,
+            });
+            const runUrlRe = new RegExp(`${owner}/${repo}/actions/runs/(\\d+)`);
+            const withRun = statuses
+              .map((s) => ({ s, m: (s.target_url || '').match(runUrlRe) }))
+              .filter((x) => x.m);
+            if (withRun.length === 0) {
+              core.setFailed(
+                `No commit status on ${sha} links to an actions/runs/<id> URL — could not resolve ` +
+                `which mattermost-mobile E2E run built the artifacts for PR #${prNumber}. Trigger E2E ` +
+                `for this PR first (e.g. the E2E/Run label), or pass mobile_run_id explicitly.`,
+              );
+              return;
+            }
+            // listCommitStatusesForRef returns most-recent-first.
+            const runId = withRun[0].m[1];
+            core.info(`Resolved mattermost-mobile E2E run ${runId} from commit status "${withRun[0].s.context}"`);
+            core.setOutput('mobile-run-id', runId);
+      - name: ci/matrix
+        id: matrix
+        run: |
+          echo "workers=$(jq -nc --argjson n ${{ inputs.workers }} '[range(1; $n+1)]')" >> "$GITHUB_OUTPUT"
+
+  # ─── iOS ────────────────────────────────────────────────────────────────
+
+  dispatch-begin-ios:
+    name: dispatch-begin (iOS)
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: ubuntu-24.04
+    needs: resolve-run
+    outputs:
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/composite-identity
+        id: composite-identity
+        env:
+          MOBILE_SHA: ${{ needs.resolve-run.outputs.mobile-sha }}
+          MOBILE_BRANCH: ${{ needs.resolve-run.outputs.mobile-branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          COMPOSITE_IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MOBILE_REPO }}" \
+            --arg sha "${MOBILE_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}-ios" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${MOBILE_BRANCH}" \
+            --argjson pr "${PR_NUMBER}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch, gh_pr_number:$pr}')
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-begin
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: maestro
+          repo-dir: ${{ github.workspace }}/mm
+          maestro-dir: detox/maestro
+          maestro-flow-path: flows
+          maestro-exclude-dir: multi_device
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          post-pending-commit-status: "false"
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers-ios:
+    name: maestro-ios-run-${{ matrix.worker_index }}
+    if: inputs.platform == 'ios' || inputs.platform == 'both'
+    runs-on: macos-26
+    needs: [resolve-run, dispatch-begin-ios]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.resolve-run.outputs.workers-matrix) }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+
+      - name: ci/download-ios-build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ios-build-simulator-${{ needs.resolve-run.outputs.mobile-run-id }}
+          repository: ${{ env.MOBILE_REPO }}
+          run-id: ${{ needs.resolve-run.outputs.mobile-run-id }}
+          github-token: ${{ secrets.GH_TOKEN }}
+          path: mm/mobile-artifacts
+      - name: ci/unzip-ios-build
+        working-directory: mm/mobile-artifacts
+        run: |
+          unzip -o Mattermost-simulator-*.app.zip -d .
+          rm -f Mattermost-simulator-*.app.zip
+          ls -la
+
+      - name: ci/cache-maestro
+        id: maestro-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.maestro
+          key: maestro-${{ hashFiles('mm/detox/maestro/maestro-version.json') }}-macos
+      - name: ci/install-maestro-cli
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
+        working-directory: mm
+        run: |
+          MAESTRO_VERSION=$(jq -r .version detox/maestro/maestro-version.json)
+          echo "Installing Maestro ${MAESTRO_VERSION}"
+          export MAESTRO_VERSION
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          "$HOME/.maestro/bin/maestro" --version
+
+      # Finds-or-creates the named device/runtime, then boots it — same
+      # sequence as e2e-detox-dispatch.yml's workers-ios job.
+      - name: ci/boot-ios-simulator
+        id: sim
+        env:
+          DEVICE_NAME: ${{ inputs.ios_device_name }}
+          DEVICE_OS_VERSION: ${{ inputs.ios_device_os_version }}
+        run: |
+          SIMULATOR_ID=$(xcrun simctl list devices | grep "$DEVICE_NAME" | grep "$DEVICE_OS_VERSION" | grep -oE '[0-9A-F]{8}-([0-9A-F]{4}-){3}[0-9A-F]{12}' | head -1 || true)
+          if [ -z "$SIMULATOR_ID" ]; then
+            DEVICE_TYPE=$(xcrun simctl list devicetypes | grep "$DEVICE_NAME (" | head -1 | awk -F'[()]' '{print $(NF-1)}')
+            RUNTIME=$(xcrun simctl list runtimes | grep "$DEVICE_OS_VERSION" | head -1 | sed 's/.* - \(.*\)/\1/')
+            SIMULATOR_ID=$(xcrun simctl create "CI-$DEVICE_NAME" "$DEVICE_TYPE" "$RUNTIME")
+          fi
+          xcrun simctl boot "$SIMULATOR_ID" || true
+          xcrun simctl bootstatus "$SIMULATOR_ID" -b
+          open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
+          echo "simulator-id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
+      - name: ci/install-ios-app
+        run: xcrun simctl install "${{ steps.sim.outputs.simulator-id }}" mm/mobile-artifacts/Mattermost.app
+
+      - name: ci/seed-test-data
+        working-directory: mm/detox/maestro
+        run: |
+          npm ci --prefer-offline --no-audit --no-fund
+          npx tsx fixtures/seed.ts
+        env:
+          SITE_1_URL: ${{ inputs.site_1_url }}
+          ADMIN_EMAIL: ${{ inputs.admin_email }}
+          ADMIN_USERNAME: ${{ inputs.admin_username }}
+          ADMIN_PASSWORD: ${{ inputs.admin_password }}
+      # fixtures/seed.ts writes .maestro-test-env.sh with the seeded
+      # credentials; export them to $GITHUB_ENV so the dispatch-run step
+      # below (a separate process, not this shell) can reference them.
+      - name: ci/export-maestro-test-env
+        working-directory: mm
+        run: |
+          set -a
+          source detox/maestro/.maestro-test-env.sh
+          set +a
+          cat >> "$GITHUB_ENV" <<EOF
+          TEST_USER_EMAIL=${TEST_USER_EMAIL}
+          TEST_USER_PASSWORD=${TEST_USER_PASSWORD}
+          TEST_CHANNEL_NAME=${TEST_CHANNEL_NAME}
+          TEST_CHANNEL_ID=${TEST_CHANNEL_ID}
+          TEST_TEAM_NAME=${TEST_TEAM_NAME}
+          ADMIN_TOKEN=${ADMIN_TOKEN}
+          EOF
+
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-run
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-run
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: maestro
+          composite-identity: ${{ needs.dispatch-begin-ios.outputs.composite-identity-json }}
+          repo-dir: ${{ github.workspace }}/mm
+          maestro-dir: detox/maestro
+          maestro-device: ${{ steps.sim.outputs.simulator-id }}
+          maestro-env: |
+            SITE_1_URL=${{ inputs.site_1_url }}
+            TEST_USER_EMAIL=${{ env.TEST_USER_EMAIL }}
+            TEST_USER_PASSWORD=${{ env.TEST_USER_PASSWORD }}
+            TEST_CHANNEL_NAME=${{ env.TEST_CHANNEL_NAME }}
+            TEST_CHANNEL_ID=${{ env.TEST_CHANNEL_ID }}
+            TEST_TEAM_NAME=${{ env.TEST_TEAM_NAME }}
+            ADMIN_TOKEN=${{ env.ADMIN_TOKEN }}
+            MAESTRO_APP_ID=com.mattermost.rnbeta
+            MAESTRO_CI=true
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-job-name: maestro-ios-run-${{ matrix.worker_index }}
+
+      - name: ci/cleanup-simulator
+        if: always()
+        timeout-minutes: 2
+        run: xcrun simctl shutdown "${{ steps.sim.outputs.simulator-id }}" 2>/dev/null || true
+
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: maestro-ios-run-${{ matrix.worker_index }}-debug
+          path: |
+            worker-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  report-ios:
+    name: report (iOS)
+    if: always() && (inputs.platform == 'ios' || inputs.platform == 'both')
+    runs-on: ubuntu-24.04
+    needs: [dispatch-begin-ios, workers-ios]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/run-summary
+        uses: ./tsio-actions/.github/actions/test-system-io-summary
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          composite-identity: ${{ needs.dispatch-begin-ios.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_IOS }}
+          update-commit-status: "false"
+          framework: maestro
+
+  # ─── Android ────────────────────────────────────────────────────────────
+  # Uses the SEPARATE android-maestro-build-files release APK — see header
+  # comment. No Metro, no androidTest APK, no adb reverse.
+
+  dispatch-begin-android:
+    name: dispatch-begin (Android)
+    if: inputs.platform == 'android' || inputs.platform == 'both'
+    runs-on: ubuntu-24.04
+    needs: resolve-run
+    outputs:
+      composite-identity-json: ${{ steps.composite-identity.outputs.composite-identity-json }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+      - name: ci/composite-identity
+        id: composite-identity
+        env:
+          MOBILE_SHA: ${{ needs.resolve-run.outputs.mobile-sha }}
+          MOBILE_BRANCH: ${{ needs.resolve-run.outputs.mobile-branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          COMPOSITE_IDENTITY=$(jq -nc \
+            --arg repo "${{ env.MOBILE_REPO }}" \
+            --arg sha "${MOBILE_SHA}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg name "${TEST_SYSTEM_IO_RUN_NAME}-android" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg branch "${MOBILE_BRANCH}" \
+            --argjson pr "${PR_NUMBER}" \
+            '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, name:$name, gh_run_attempt:$attempt, branch:$branch, gh_pr_number:$pr}')
+          echo "composite-identity-json=${COMPOSITE_IDENTITY}" >> "$GITHUB_OUTPUT"
+          echo "Composite identity: ${COMPOSITE_IDENTITY}"
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-begin
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-begin
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: maestro
+          repo-dir: ${{ github.workspace }}/mm
+          maestro-dir: detox/maestro
+          maestro-flow-path: flows
+          maestro-exclude-dir: multi_device
+          composite-identity: ${{ steps.composite-identity.outputs.composite-identity-json }}
+          post-pending-commit-status: "false"
+          total-reports-expected: ${{ inputs.workers }}
+          retest-on-fail: ${{ inputs.retest_on_fail }}
+
+  workers-android:
+    name: maestro-android-run-${{ matrix.worker_index }}
+    if: inputs.platform == 'android' || inputs.platform == 'both'
+    runs-on: ubuntu-24.04
+    needs: [resolve-run, dispatch-begin-android]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_index: ${{ fromJSON(needs.resolve-run.outputs.workers-matrix) }}
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPO }}
+          ref: ${{ needs.resolve-run.outputs.mobile-sha }}
+          path: mm
+          fetch-depth: 1
+
+      - name: ci/download-android-maestro-build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: android-maestro-build-files-${{ needs.resolve-run.outputs.mobile-run-id }}
+          repository: ${{ env.MOBILE_REPO }}
+          run-id: ${{ needs.resolve-run.outputs.mobile-run-id }}
+          github-token: ${{ secrets.GH_TOKEN }}
+          path: mm/android/app/build/outputs/apk/release
+
+      - name: ci/cache-maestro
+        id: maestro-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.maestro
+          key: maestro-${{ hashFiles('mm/detox/maestro/maestro-version.json') }}-linux
+      - name: ci/install-maestro-cli
+        if: steps.maestro-cache.outputs.cache-hit != 'true'
+        working-directory: mm
+        run: |
+          MAESTRO_VERSION=$(jq -r .version detox/maestro/maestro-version.json)
+          echo "Installing Maestro ${MAESTRO_VERSION}"
+          export MAESTRO_VERSION
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          "$HOME/.maestro/bin/maestro" --version
+
+      # sdkmanager exists on the runner image but its cmdline-tools/latest/bin
+      # dir isn't on PATH by default in a job step's shell.
+      - name: ci/add-android-cmdline-tools-to-path
+        run: |
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+      - name: ci/enable-kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: ci/install-android-emulator-deps
+        run: sudo apt-get install -y libpulse0 scrot ffmpeg xvfb
+      - name: ci/start-xvfb
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+      - name: ci/accept-android-licenses
+        run: yes | sdkmanager --licenses || true
+      - name: ci/install-android-system-image
+        env:
+          API_LEVEL: ${{ inputs.android_api_level }}
+        run: |
+          sdkmanager --install "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "system-images;android-${API_LEVEL};google_apis;x86_64"
+
+      - name: ci/create-and-boot-android-emulator
+        env:
+          AVD_NAME: ${{ inputs.android_avd_name }}
+          API_LEVEL: ${{ inputs.android_api_level }}
+        run: |
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          echo "no" | avdmanager create avd -n "$AVD_NAME" -k "system-images;android-${API_LEVEL};google_apis;x86_64" -d "pixel_4_xl" --force
+          "$ANDROID_HOME/emulator/emulator" -avd "$AVD_NAME" -no-snapshot -no-snapshot-load -no-snapshot-save \
+            -no-boot-anim -no-audio -gpu swiftshader_indirect -accel on -no-window -qemu -m 3072 &
+          echo "EMULATOR_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 60); do
+            adb devices | grep -qE '^emulator-[0-9]+\s+device' && break
+            sleep 2
+          done
+          for i in $(seq 1 150); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 2
+          done
+          sleep 30 # API 35 emulators take longer to stabilize the instrumentation layer
+
+      # Release build — single APK, no androidTest counterpart (Maestro
+      # doesn't use Espresso instrumentation).
+      - name: ci/install-android-app
+        run: |
+          adb install -r mm/android/app/build/outputs/apk/release/app-release.apk
+          adb shell pm grant com.mattermost.rnbeta android.permission.POST_NOTIFICATIONS || true
+          adb shell pm grant com.mattermost.rnbeta android.permission.RECORD_AUDIO || true
+          adb shell pm grant com.mattermost.rnbeta android.permission.CAMERA || true
+
+      - name: ci/seed-test-data
+        working-directory: mm/detox/maestro
+        run: |
+          npm ci --prefer-offline --no-audit --no-fund
+          npx tsx fixtures/seed.ts
+        env:
+          SITE_1_URL: ${{ inputs.site_1_url }}
+          ADMIN_EMAIL: ${{ inputs.admin_email }}
+          ADMIN_USERNAME: ${{ inputs.admin_username }}
+          ADMIN_PASSWORD: ${{ inputs.admin_password }}
+      - name: ci/export-maestro-test-env
+        working-directory: mm
+        run: |
+          set -a
+          source detox/maestro/.maestro-test-env.sh
+          set +a
+          cat >> "$GITHUB_ENV" <<EOF
+          TEST_USER_EMAIL=${TEST_USER_EMAIL}
+          TEST_USER_PASSWORD=${TEST_USER_PASSWORD}
+          TEST_CHANNEL_NAME=${TEST_CHANNEL_NAME}
+          TEST_CHANNEL_ID=${TEST_CHANNEL_ID}
+          TEST_TEAM_NAME=${TEST_TEAM_NAME}
+          ADMIN_TOKEN=${ADMIN_TOKEN}
+          EOF
+
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/dispatch-run
+        uses: ./tsio-actions/.github/actions/test-system-io-dispatch-run
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          framework: maestro
+          composite-identity: ${{ needs.dispatch-begin-android.outputs.composite-identity-json }}
+          repo-dir: ${{ github.workspace }}/mm
+          maestro-dir: detox/maestro
+          maestro-platform: android
+          maestro-env: |
+            SITE_1_URL=${{ inputs.site_1_url }}
+            TEST_USER_EMAIL=${{ env.TEST_USER_EMAIL }}
+            TEST_USER_PASSWORD=${{ env.TEST_USER_PASSWORD }}
+            TEST_CHANNEL_NAME=${{ env.TEST_CHANNEL_NAME }}
+            TEST_CHANNEL_ID=${{ env.TEST_CHANNEL_ID }}
+            TEST_TEAM_NAME=${{ env.TEST_TEAM_NAME }}
+            ADMIN_TOKEN=${{ env.ADMIN_TOKEN }}
+            MAESTRO_APP_ID=com.mattermost.rnbeta
+            MAESTRO_CI=true
+          artifacts-root: ${{ github.workspace }}/worker-artifacts
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-job-name: maestro-android-run-${{ matrix.worker_index }}
+
+      - name: ci/cleanup-emulator
+        if: always()
+        timeout-minutes: 2
+        run: |
+          adb -s emulator-5554 emu kill 2>/dev/null || true
+          pkill -9 -f qemu-system 2>/dev/null || true
+
+      - name: ci/upload-debug-artifacts
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: maestro-android-run-${{ matrix.worker_index }}-debug
+          path: |
+            worker-artifacts/
+          retention-days: 5
+          if-no-files-found: ignore
+
+  report-android:
+    name: report (Android)
+    if: always() && (inputs.platform == 'android' || inputs.platform == 'both')
+    runs-on: ubuntu-24.04
+    needs: [dispatch-begin-android, workers-android]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: ci/checkout-test-system-io-actions
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost-test-system-io
+          ref: ${{ inputs.test_system_io_actions_ref }}
+          path: tsio-actions
+          fetch-depth: 1
+      - name: ci/run-summary
+        uses: ./tsio-actions/.github/actions/test-system-io-summary
+        with:
+          use-staging: ${{ env.TEST_SYSTEM_IO_USE_STAGING }}
+          composite-identity: ${{ needs.dispatch-begin-android.outputs.composite-identity-json }}
+          commit-status-context: ${{ env.TEST_SYSTEM_IO_COMMIT_STATUS_CONTEXT_ANDROID }}
+          update-commit-status: "false"
+          framework: maestro
