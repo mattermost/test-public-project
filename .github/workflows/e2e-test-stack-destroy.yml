@@ -1,0 +1,139 @@
+---
+name: E2E Test Stack - Destroy and Validate
+
+# Releases a batch, then checks every site it had stops serving.
+#
+# Takes only the batch id, which e2e-test-stack-create.yml prints in its job
+# summary. The destroy response lists the batch's sites, so the check covers all
+# of them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch_id:
+        description: "Batch to destroy, from the create run's summary"
+        required: true
+        type: string
+      lambda_alias:
+        description: "Control plane to invoke. Match whatever created the batch."
+        required: false
+        type: choice
+        options: ["v1", "edge"]
+        default: "v1"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  destroy:
+    runs-on: ubuntu-24.04
+    steps:
+      # Once. Every step below inherits these credentials.
+      - name: ci/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3 (2026-07-22)
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 900
+
+      - name: ci/destroy
+        id: destroy
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@97d2030707b46d8f2664110be2ea121bf443d807 # e2e-test-stack-actions
+        with:
+          batch_id: ${{ inputs.batch_id }}
+          lambda_alias: ${{ inputs.lambda_alias }}
+
+      - name: ci/probe-gone
+        id: probe-gone
+        if: always() && steps.destroy.outputs.sites != ''
+        env:
+          SITES: ${{ steps.destroy.outputs.sites }}
+        run: |
+          set -euo pipefail
+
+          # An instance that never launched has no site, and leaves a hole so
+          # that index still maps to instance.
+          targets=$(jq -r '.[] | select(. != "")' <<< "$SITES")
+          if [ -z "$targets" ]; then
+            echo "no sites to check"
+            exit 0
+          fi
+
+          # Retried: destroy returns while the stacks are still terminating, and
+          # requests stop reaching one a few seconds after that.
+          #
+          # A refused or timed-out request does not count. That is what any
+          # network fault looks like, so the check needs an answer saying the
+          # hostname is not served.
+          failed=0
+          for site in $targets; do
+            gone=0
+            for attempt in $(seq 1 20); do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${site}/api/v4/system/ping" || echo "000")
+              case "$code" in
+                404 | 502 | 503)
+                  echo "  gone           ${site} (${code} after ${attempt} attempt(s))"
+                  gone=1
+                  break
+                  ;;
+              esac
+              sleep 5
+            done
+            if [ "$gone" -ne 1 ]; then
+              echo "::error::${site} is still serving after being destroyed"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: ci/summary
+        if: always()
+        env:
+          BATCH_ID: ${{ inputs.batch_id }}
+          DESTROY: ${{ steps.destroy.outcome }}
+          STATE: ${{ steps.destroy.outputs.state }}
+          CHECKED: ${{ steps.destroy.outputs.sites }}
+          GONE: ${{ steps.probe-gone.outcome }}
+        run: |
+          set -euo pipefail
+
+          status() {
+            case "$1" in
+              success) echo "pass" ;;
+              failure) echo "**FAIL**" ;;
+              '') echo "not run" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          # A check that never ran is not a pass, so it is called out separately
+          # from one that did and failed.
+          overall=pass
+          for outcome in "$DESTROY" "$GONE"; do
+            if [ "$outcome" = failure ]; then
+              overall="**FAIL**"
+              break
+            fi
+            if [ "$outcome" != success ] && [ "$overall" = pass ]; then
+              overall=incomplete
+            fi
+          done
+
+          {
+            echo "### Validation — ${overall}"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Batch | \`${BATCH_ID}\` |"
+            echo "| Released | $(status "$DESTROY")${STATE:+ (${STATE})} |"
+            echo "| Sites checked | $(jq -r 'map(select(. != "")) | length' <<< "${CHECKED:-[]}") |"
+            echo "| No longer serving | $(status "$GONE") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The summary is the verdict, so the job carries it. A check that did
+          # not run leaves the run unproven, which is not a pass either.
+          if [ "$overall" != pass ]; then
+            echo "::error::validation ${overall//\*/}"
+            exit 1
+          fi

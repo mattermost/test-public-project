@@ -1,0 +1,253 @@
+---
+name: E2E Test Stack - Create and Validate
+
+# Leases test servers, then checks them:
+#
+#   every site answers unauthenticated
+#   every site accepts the admin credentials
+#
+# Nothing is released here. The batch lives out its TTL unless
+# e2e-test-stack-destroy.yml is run against the batch id this prints.
+#
+# Every input the create action takes is exposed, so each can be exercised from
+# the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      instance_key:
+        description: "Names the stack, and its hostname. Lowercase letters, digits and hyphens, 24 characters or fewer."
+        required: true
+        type: string
+      server_image:
+        description: "Mattermost server image on Docker Hub, by tag, e.g. mattermostdevelopment/mattermost-enterprise-edition:master"
+        required: false
+        type: string
+        default: "mattermostdevelopment/mattermost-enterprise-edition:master"
+      count:
+        description: "Instances to create, from 1 to 40"
+        required: false
+        type: string
+        default: "1"
+      lambda_alias:
+        description: "Control plane to invoke"
+        required: false
+        type: choice
+        options: ["v1", "edge"]
+        default: "v1"
+      services:
+        description: "Comma-separated optional services, e.g. 'keycloak,minio'. One or more of: minio or azurite, elasticsearch or opensearch, keycloak, openldap. Each 'or' pair sets the same boot setting, so only one of each may run. Empty runs Postgres, Inbucket and the server alone. Everything at once is 'minio,elasticsearch,keycloak,openldap'."
+        required: false
+        type: string
+        default: ""
+      ttl:
+        description: "Lifetime before the reaper takes it - 90m, 4h"
+        required: false
+        type: string
+        default: "1h"
+      os:
+        description: "Operating system the stack runs on"
+        required: false
+        type: choice
+        options: ["ubuntu-24.04", "ubuntu-26.04"]
+        default: "ubuntu-24.04"
+      license:
+        description: "Licence SKU - 'enterprise-advanced'. Empty runs unlicensed."
+        required: false
+        type: string
+        default: ""
+      wait_for_migrations:
+        description: "Wait for server migrations before reporting ready"
+        required: false
+        type: boolean
+        default: false
+      shared_admin_password:
+        description: "One admin password across the batch"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  create:
+    runs-on: ubuntu-24.04
+    steps:
+      # Once. Every step below inherits these credentials.
+      - name: ci/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3 (2026-07-22)
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 1200
+
+      - name: ci/create
+        id: stack
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@97d2030707b46d8f2664110be2ea121bf443d807 # e2e-test-stack-actions
+        with:
+          instance_key: ${{ inputs.instance_key }}
+          server_image: ${{ inputs.server_image }}
+          count: ${{ inputs.count }}
+          lambda_alias: ${{ inputs.lambda_alias }}
+          services: ${{ inputs.services }}
+          ttl: ${{ inputs.ttl }}
+          os: ${{ inputs.os }}
+          license: ${{ inputs.license }}
+          wait_for_migrations: ${{ inputs.wait_for_migrations }}
+          shared_admin_password: ${{ inputs.shared_admin_password }}
+
+      - name: ci/probe-unauthenticated
+        id: probe-unauth
+        if: always() && steps.stack.outputs.batch_id != ''
+        env:
+          SITES: ${{ steps.stack.outputs.sites }}
+        run: |
+          set -euo pipefail
+
+          # The ping endpoint needs no session, so a 200 means the stack is
+          # serving, not just resolving.
+          failed=0
+          for site in $(jq -r '.[]' <<< "$SITES"); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "${site}/api/v4/system/ping" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "  reachable      ${site}"
+            else
+              echo "::error::${site} answered ${code}, want 200"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: ci/credentials
+        id: creds
+        if: always() && steps.stack.outputs.batch_id != ''
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@97d2030707b46d8f2664110be2ea121bf443d807 # e2e-test-stack-actions
+        with:
+          batch_id: ${{ steps.stack.outputs.batch_id }}
+          index: "0"
+          lambda_alias: ${{ inputs.lambda_alias }}
+
+      - name: ci/probe-authenticated
+        id: probe-auth
+        if: always() && steps.stack.outputs.batch_id != ''
+        env:
+          SITES: ${{ steps.stack.outputs.sites }}
+          SHARED: ${{ inputs.shared_admin_password }}
+          # Through env, never inside the run body: an expression referenced
+          # there is rendered into the log.
+          ADMIN_USER: ${{ steps.creds.outputs.admin_username }}
+          ADMIN_PASS: ${{ steps.creds.outputs.admin_password }}
+          FIRST_SITE: ${{ steps.creds.outputs.site_url }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "::error::no credentials were fetched, so nothing can be checked"
+            exit 1
+          fi
+
+          # The password fetched above belongs to one instance. It opens every
+          # instance only when the batch was asked to share one, so without that
+          # only the instance it was fetched for is checked.
+          if [ "$SHARED" = "true" ]; then
+            targets=$(jq -r '.[]' <<< "$SITES")
+          else
+            targets=$FIRST_SITE
+            echo "  shared_admin_password is false, so only ${FIRST_SITE} is checked"
+          fi
+
+          failed=0
+          for site in $targets; do
+            # Logging in checks the admin account exists and that its password
+            # is the one reported.
+            body=$(jq -nc --arg id "$ADMIN_USER" --arg pw "$ADMIN_PASS" \
+              '{login_id: $id, password: $pw}')
+
+            token=$(curl -sS -D - -o /dev/null --max-time 30 \
+              -H 'Content-Type: application/json' \
+              -d "$body" "${site}/api/v4/users/login" \
+              | tr -d '\r' | awk '/^[Tt]oken: /{print $2}')
+
+            if [ -z "$token" ]; then
+              echo "::error::${site} did not issue a session for ${ADMIN_USER}"
+              failed=1
+              continue
+            fi
+            echo "::add-mask::${token}"
+
+            role=$(curl -sS --max-time 30 -H "Authorization: Bearer ${token}" \
+              "${site}/api/v4/users/me" | jq -r '.roles // ""')
+            case "$role" in
+              *system_admin*) echo "  authenticated  ${site}" ;;
+              *)
+                echo "::error::${site} logged in but the account is not an admin: '${role}'"
+                failed=1
+                ;;
+            esac
+          done
+          exit $failed
+
+      # The batch is still running. What the destroy workflow needs to release
+      # it goes here, because nothing else records it.
+      - name: ci/summary
+        if: always() && steps.stack.outputs.batch_id != ''
+        env:
+          BATCH_ID: ${{ steps.stack.outputs.batch_id }}
+          SITES: ${{ steps.stack.outputs.sites }}
+          READY: ${{ steps.stack.outputs.ready }}
+          UNAUTH: ${{ steps.probe-unauth.outcome }}
+          CREDS: ${{ steps.creds.outcome }}
+          AUTH: ${{ steps.probe-auth.outcome }}
+        run: |
+          set -euo pipefail
+
+          status() {
+            case "$1" in
+              success) echo "pass" ;;
+              failure) echo "**FAIL**" ;;
+              '') echo "not run" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          # A check that never ran is not a pass, so it is called out separately
+          # from one that did and failed.
+          overall=pass
+          for outcome in "$UNAUTH" "$CREDS" "$AUTH"; do
+            if [ "$outcome" = failure ]; then
+              overall="**FAIL**"
+              break
+            fi
+            if [ "$outcome" != success ] && [ "$overall" = pass ]; then
+              overall=incomplete
+            fi
+          done
+          {
+            echo "### Validation — ${overall}"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Instances ready | ${READY:-0} |"
+            echo "| Reachable unauthenticated | $(status "$UNAUTH") |"
+            echo "| Credentials fetched | $(status "$CREDS") |"
+            echo "| Admin credentials accepted | $(status "$AUTH") |"
+            echo
+            echo "### Still running"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| \`batch_id\` | \`${BATCH_ID}\` |"
+            echo "| \`sites\` | \`${SITES}\` |"
+            echo
+            echo "Release it with **E2E Test Stack - Destroy and Validate**, which takes"
+            echo "the \`batch_id\` and finds the sites to check from the batch itself."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The summary is the verdict, so the job carries it. A check that did
+          # not run leaves the run unproven, which is not a pass either.
+          if [ "$overall" != pass ]; then
+            echo "::error::validation ${overall//\*/}"
+            exit 1
+          fi
