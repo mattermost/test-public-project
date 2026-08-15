@@ -85,7 +85,7 @@ jobs:
 
       - name: ci/create
         id: stack
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@781be37a71333b7a086d6c7c350840b3c87f315d # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@44e47a5e83b4f544314889c54630d0c8d67cb595 # e2e-test-stack-actions
         with:
           instance_key: ${{ inputs.instance_key }}
           server_image: ${{ inputs.server_image }}
@@ -123,10 +123,9 @@ jobs:
       - name: ci/credentials
         id: creds
         if: always() && steps.stack.outputs.batch_id != ''
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@781be37a71333b7a086d6c7c350840b3c87f315d # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@44e47a5e83b4f544314889c54630d0c8d67cb595 # e2e-test-stack-actions
         with:
           batch_id: ${{ steps.stack.outputs.batch_id }}
-          index: "0"
           lambda_alias: ${{ inputs.lambda_alias }}
 
       - name: ci/probe-authenticated

@@ -39,7 +39,7 @@ jobs:
 
       - name: ci/destroy
         id: destroy
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@781be37a71333b7a086d6c7c350840b3c87f315d # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@44e47a5e83b4f544314889c54630d0c8d67cb595 # e2e-test-stack-actions
         with:
           batch_id: ${{ inputs.batch_id }}
           lambda_alias: ${{ inputs.lambda_alias }}
