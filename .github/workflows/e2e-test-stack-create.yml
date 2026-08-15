@@ -85,7 +85,7 @@ jobs:
 
       - name: ci/create
         id: stack
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@97d2030707b46d8f2664110be2ea121bf443d807 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@781be37a71333b7a086d6c7c350840b3c87f315d # e2e-test-stack-actions
         with:
           instance_key: ${{ inputs.instance_key }}
           server_image: ${{ inputs.server_image }}
@@ -123,7 +123,7 @@ jobs:
       - name: ci/credentials
         id: creds
         if: always() && steps.stack.outputs.batch_id != ''
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@97d2030707b46d8f2664110be2ea121bf443d807 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@781be37a71333b7a086d6c7c350840b3c87f315d # e2e-test-stack-actions
         with:
           batch_id: ${{ steps.stack.outputs.batch_id }}
           index: "0"
@@ -133,36 +133,28 @@ jobs:
         id: probe-auth
         if: always() && steps.stack.outputs.batch_id != ''
         env:
-          SITES: ${{ steps.stack.outputs.sites }}
-          SHARED: ${{ inputs.shared_admin_password }}
           # Through env, never inside the run body: an expression referenced
           # there is rendered into the log.
-          ADMIN_USER: ${{ steps.creds.outputs.admin_username }}
-          ADMIN_PASS: ${{ steps.creds.outputs.admin_password }}
-          FIRST_SITE: ${{ steps.creds.outputs.site_url }}
+          INSTANCES: ${{ steps.creds.outputs.instances }}
         run: |
           set -euo pipefail
 
-          if [ -z "$ADMIN_PASS" ]; then
+          if [ -z "$INSTANCES" ] || [ "$INSTANCES" = "[]" ]; then
             echo "::error::no credentials were fetched, so nothing can be checked"
             exit 1
           fi
 
-          # The password fetched above belongs to one instance. It opens every
-          # instance only when the batch was asked to share one, so without that
-          # only the instance it was fetched for is checked.
-          if [ "$SHARED" = "true" ]; then
-            targets=$(jq -r '.[]' <<< "$SITES")
-          else
-            targets=$FIRST_SITE
-            echo "  shared_admin_password is false, so only ${FIRST_SITE} is checked"
-          fi
-
           failed=0
-          for site in $targets; do
+          # Each instance with its own admin, so this holds whether or not the
+          # batch was asked to share one password.
+          while read -r entry; do
+            site=$(jq -r '.site_url' <<< "$entry")
+            user=$(jq -r '.admin_username' <<< "$entry")
+            pass=$(jq -r '.admin_password' <<< "$entry")
+
             # Logging in checks the admin account exists and that its password
             # is the one reported.
-            body=$(jq -nc --arg id "$ADMIN_USER" --arg pw "$ADMIN_PASS" \
+            body=$(jq -nc --arg id "$user" --arg pw "$pass" \
               '{login_id: $id, password: $pw}')
 
             token=$(curl -sS -D - -o /dev/null --max-time 30 \
@@ -171,7 +163,7 @@ jobs:
               | tr -d '\r' | awk '/^[Tt]oken: /{print $2}')
 
             if [ -z "$token" ]; then
-              echo "::error::${site} did not issue a session for ${ADMIN_USER}"
+              echo "::error::${site} did not issue a session for ${user}"
               failed=1
               continue
             fi
@@ -186,7 +178,7 @@ jobs:
                 failed=1
                 ;;
             esac
-          done
+          done < <(jq -c '.[]' <<< "$INSTANCES")
           exit $failed
 
       # The batch is still running. What the destroy workflow needs to release
