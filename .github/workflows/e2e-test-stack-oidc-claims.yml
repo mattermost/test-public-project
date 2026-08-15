@@ -43,7 +43,11 @@ jobs:
             3) payload="${payload}=" ;;
           esac
 
+          # iss included: an enterprise with a unique issuer URL mints tokens that
+          # no provider registered under the shared issuer will match, and the
+          # refusal is worded identically to a condition that did not match.
           echo "$payload" | base64 -d | jq '{
+            iss,
             aud,
             repository,
             repository_owner,
