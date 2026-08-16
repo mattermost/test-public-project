@@ -110,6 +110,48 @@ jobs:
           wait_for_migrations: ${{ inputs.wait_for_migrations }}
           shared_admin_password: ${{ inputs.shared_admin_password }}
 
+      - name: ci/logs
+        id: logs
+        if: always() && steps.stack.outputs.batch_id != ''
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-logs@319ff17cb6e3b6e3bf4465443d51c7bda7570d7f # e2e-test-stack-actions
+        with:
+          batch_id: ${{ steps.stack.outputs.batch_id }}
+          lambda_alias: ${{ inputs.lambda_alias }}
+
+      - name: ci/assert-logs
+        id: assert-logs
+        if: always() && steps.logs.outputs.path != ''
+        env:
+          LOG_PATH: ${{ steps.logs.outputs.path }}
+          CONTAINERS: ${{ steps.logs.outputs.containers }}
+        run: |
+          set -euo pipefail
+
+          lines=$(wc -l < "$LOG_PATH")
+          if [ "$lines" -eq 0 ]; then
+            echo "::error::log file is empty"
+            exit 1
+          fi
+          echo "  ${lines} line(s)"
+
+          count=$(jq 'length' <<< "$CONTAINERS")
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no containers in the log"
+            exit 1
+          fi
+          jq -r '.[] | "  holds " + .' <<< "$CONTAINERS"
+
+      - name: ci/upload-logs
+        id: upload-logs
+        if: always() && steps.logs.outputs.path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-logs-${{ steps.stack.outputs.batch_id }}
+          path: |
+            ${{ steps.logs.outputs.path }}
+            ${{ steps.logs.outputs.full_path }}
+          if-no-files-found: warn
+
       - name: ci/probe-unauthenticated
         id: probe-unauth
         if: always() && steps.stack.outputs.batch_id != ''
@@ -200,6 +242,9 @@ jobs:
           BATCH_ID: ${{ steps.stack.outputs.batch_id }}
           SITES: ${{ steps.stack.outputs.sites }}
           READY: ${{ steps.stack.outputs.ready }}
+          LOGS: ${{ steps.logs.outcome }}
+          ASSERT_LOGS: ${{ steps.assert-logs.outcome }}
+          UPLOAD_LOGS: ${{ steps.upload-logs.outcome }}
           UNAUTH: ${{ steps.probe-unauth.outcome }}
           CREDS: ${{ steps.creds.outcome }}
           AUTH: ${{ steps.probe-auth.outcome }}
@@ -218,7 +263,7 @@ jobs:
           # A check that never ran is not a pass, so it is called out separately
           # from one that did and failed.
           overall=pass
-          for outcome in "$UNAUTH" "$CREDS" "$AUTH"; do
+          for outcome in "$LOGS" "$ASSERT_LOGS" "$UPLOAD_LOGS" "$UNAUTH" "$CREDS" "$AUTH"; do
             if [ "$outcome" = failure ]; then
               overall="**FAIL**"
               break
@@ -233,6 +278,9 @@ jobs:
             echo "| Check | Result |"
             echo "|---|---|"
             echo "| Instances ready | ${READY:-0} |"
+            echo "| Logs collected | $(status "$LOGS") |"
+            echo "| Log assertions | $(status "$ASSERT_LOGS") |"
+            echo "| Logs uploaded | $(status "$UPLOAD_LOGS") |"
             echo "| Reachable unauthenticated | $(status "$UNAUTH") |"
             echo "| Credentials fetched | $(status "$CREDS") |"
             echo "| Admin credentials accepted | $(status "$AUTH") |"
