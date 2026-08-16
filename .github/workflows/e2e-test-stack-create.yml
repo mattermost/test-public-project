@@ -51,6 +51,11 @@ on:
         type: choice
         options: ["ubuntu-24.04", "ubuntu-26.04"]
         default: "ubuntu-24.04"
+      postgres:
+        description: "Postgres version - '14', '15', '16', '17', '18'. Empty uses the pin's default (currently 16)."
+        required: false
+        type: string
+        default: ""
       license:
         description: "Licence SKU - 'enterprise-advanced'. Empty runs unlicensed."
         required: false
@@ -90,7 +95,7 @@ jobs:
 
       - name: ci/create
         id: stack
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@ddce458042288db32811c25d1ca2a3eb64ab2f66 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@319ff17cb6e3b6e3bf4465443d51c7bda7570d7f # e2e-test-stack-actions
         with:
           instance_key: ${{ inputs.instance_key }}
           server_image: ${{ inputs.server_image }}
@@ -99,6 +104,7 @@ jobs:
           services: ${{ inputs.services }}
           ttl: ${{ inputs.ttl }}
           os: ${{ inputs.os }}
+          postgres: ${{ inputs.postgres }}
           license: ${{ inputs.license }}
           server_env: ${{ inputs.server_env }}
           wait_for_migrations: ${{ inputs.wait_for_migrations }}
@@ -129,7 +135,7 @@ jobs:
       - name: ci/credentials
         id: creds
         if: always() && steps.stack.outputs.batch_id != ''
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@ddce458042288db32811c25d1ca2a3eb64ab2f66 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@319ff17cb6e3b6e3bf4465443d51c7bda7570d7f # e2e-test-stack-actions
         with:
           batch_id: ${{ steps.stack.outputs.batch_id }}
           lambda_alias: ${{ inputs.lambda_alias }}
