@@ -37,9 +37,39 @@ jobs:
           aws-region: us-east-1
           role-duration-seconds: 900
 
+      - name: ci/logs
+        id: logs
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-logs@ddce458042288db32811c25d1ca2a3eb64ab2f66 # e2e-test-stack-actions
+        with:
+          batch_id: ${{ inputs.batch_id }}
+          lambda_alias: ${{ inputs.lambda_alias }}
+
+      - name: ci/assert-logs
+        id: assert-logs
+        env:
+          LOG_PATH: ${{ steps.logs.outputs.path }}
+          CONTAINERS: ${{ steps.logs.outputs.containers }}
+        run: |
+          set -euo pipefail
+
+          lines=$(wc -l < "$LOG_PATH")
+          if [ "$lines" -eq 0 ]; then
+            echo "::error::log file is empty"
+            exit 1
+          fi
+          echo "  ${lines} line(s)"
+
+          count=$(jq 'length' <<< "$CONTAINERS")
+          if [ "$count" -eq 0 ]; then
+            echo "::error::no containers in the log"
+            exit 1
+          fi
+          jq -r '.[] | "  holds " + .' <<< "$CONTAINERS"
+
       - name: ci/destroy
         id: destroy
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@44e47a5e83b4f544314889c54630d0c8d67cb595 # e2e-test-stack-actions
+        if: always()
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@ddce458042288db32811c25d1ca2a3eb64ab2f66 # e2e-test-stack-actions
         with:
           batch_id: ${{ inputs.batch_id }}
           lambda_alias: ${{ inputs.lambda_alias }}
@@ -91,6 +121,8 @@ jobs:
         if: always()
         env:
           BATCH_ID: ${{ inputs.batch_id }}
+          LOGS: ${{ steps.logs.outcome }}
+          ASSERT_LOGS: ${{ steps.assert-logs.outcome }}
           DESTROY: ${{ steps.destroy.outcome }}
           STATE: ${{ steps.destroy.outputs.state }}
           CHECKED: ${{ steps.destroy.outputs.sites }}
@@ -110,7 +142,7 @@ jobs:
           # A check that never ran is not a pass, so it is called out separately
           # from one that did and failed.
           overall=pass
-          for outcome in "$DESTROY" "$GONE"; do
+          for outcome in "$LOGS" "$ASSERT_LOGS" "$DESTROY" "$GONE"; do
             if [ "$outcome" = failure ]; then
               overall="**FAIL**"
               break
@@ -126,6 +158,8 @@ jobs:
             echo "| Check | Result |"
             echo "|---|---|"
             echo "| Batch | \`${BATCH_ID}\` |"
+            echo "| Logs collected | $(status "$LOGS") |"
+            echo "| Log assertions | $(status "$ASSERT_LOGS") |"
             echo "| Released | $(status "$DESTROY")${STATE:+ (${STATE})} |"
             echo "| Sites checked | $(jq -r 'map(select(. != "")) | length' <<< "${CHECKED:-[]}") |"
             echo "| No longer serving | $(status "$GONE") |"

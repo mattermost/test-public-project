@@ -56,6 +56,11 @@ on:
         required: false
         type: string
         default: ""
+      server_env:
+        description: "Server settings to override at boot, as a JSON object - e.g. '{\"MM_FEATUREFLAGS_TESTFEATURE\":\"true\"}'. Merged over the baseline."
+        required: false
+        type: string
+        default: ""
       wait_for_migrations:
         description: "Wait for server migrations before reporting ready"
         required: false
@@ -85,7 +90,7 @@ jobs:
 
       - name: ci/create
         id: stack
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@44e47a5e83b4f544314889c54630d0c8d67cb595 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@ddce458042288db32811c25d1ca2a3eb64ab2f66 # e2e-test-stack-actions
         with:
           instance_key: ${{ inputs.instance_key }}
           server_image: ${{ inputs.server_image }}
@@ -95,6 +100,7 @@ jobs:
           ttl: ${{ inputs.ttl }}
           os: ${{ inputs.os }}
           license: ${{ inputs.license }}
+          server_env: ${{ inputs.server_env }}
           wait_for_migrations: ${{ inputs.wait_for_migrations }}
           shared_admin_password: ${{ inputs.shared_admin_password }}
 
@@ -123,7 +129,7 @@ jobs:
       - name: ci/credentials
         id: creds
         if: always() && steps.stack.outputs.batch_id != ''
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@44e47a5e83b4f544314889c54630d0c8d67cb595 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@ddce458042288db32811c25d1ca2a3eb64ab2f66 # e2e-test-stack-actions
         with:
           batch_id: ${{ steps.stack.outputs.batch_id }}
           lambda_alias: ${{ inputs.lambda_alias }}
