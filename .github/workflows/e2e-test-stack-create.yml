@@ -7,7 +7,8 @@ name: E2E Test Stack - Create and Validate
 #   every site accepts the admin credentials
 #
 # Nothing is released here. The batch lives out its TTL unless
-# e2e-test-stack-destroy.yml is run against the batch id this prints.
+# e2e-test-stack-destroy.yml is run with the batch_id and caller_run_id
+# this prints.
 #
 # Every input the create action takes is exposed, so each can be exercised from
 # the Actions tab.
@@ -240,6 +241,8 @@ jobs:
         if: always() && steps.stack.outputs.batch_id != ''
         env:
           BATCH_ID: ${{ steps.stack.outputs.batch_id }}
+          CALLER_REPOSITORY: ${{ steps.stack.outputs.caller_repository }}
+          CALLER_RUN_ID: ${{ steps.stack.outputs.caller_run_id }}
           SITES: ${{ steps.stack.outputs.sites }}
           READY: ${{ steps.stack.outputs.ready }}
           LOGS: ${{ steps.logs.outcome }}
@@ -290,10 +293,12 @@ jobs:
             echo "| Item | Value |"
             echo "|---|---|"
             echo "| \`batch_id\` | \`${BATCH_ID}\` |"
+            echo "| \`caller_run_id\` | \`${CALLER_RUN_ID}\` |"
+            echo "| \`caller_repository\` | \`${CALLER_REPOSITORY}\` |"
             echo "| \`sites\` | \`${SITES}\` |"
             echo
-            echo "Release it with **E2E Test Stack - Destroy and Validate**, which takes"
-            echo "the \`batch_id\` and finds the sites to check from the batch itself."
+            echo "Release it with **E2E Test Stack - Destroy and Validate**. Pass"
+            echo "\`batch_id\` and \`caller_run_id\` from this table (same repository)."
           } >> "$GITHUB_STEP_SUMMARY"
 
           # The summary is the verdict, so the job carries it. A check that did

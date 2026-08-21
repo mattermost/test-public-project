@@ -3,8 +3,8 @@ name: E2E Test Stack - Destroy and Validate
 
 # Releases a batch, then checks every site it had stops serving.
 #
-# Takes only the batch id, which e2e-test-stack-create.yml prints in its job
-# summary. The destroy response lists the batch's sites, so the check covers all
+# Takes the batch id and the create run's github.run_id (printed in that run's
+# summary). The destroy response lists the batch's sites, so the check covers all
 # of them.
 
 on:
@@ -14,6 +14,15 @@ on:
         description: "Batch to destroy, from the create run's summary"
         required: true
         type: string
+      caller_run_id:
+        description: "github.run_id of the create workflow (printed in that run's summary)"
+        required: true
+        type: string
+      caller_repository:
+        description: "Repository that created the batch. Leave empty for this repository."
+        required: false
+        type: string
+        default: ""
       lambda_alias:
         description: "Control plane to invoke. Match whatever created the batch."
         required: false
@@ -35,13 +44,15 @@ jobs:
         with:
           role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
           aws-region: us-east-1
-          role-duration-seconds: 900
+          role-duration-seconds: 1200
 
       - name: ci/logs
         id: logs
         uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-logs@e955c1ec2a75c14662f0b1c3a5a14b8227b8082f # e2e-test-stack-actions
         with:
           batch_id: ${{ inputs.batch_id }}
+          caller_run_id: ${{ inputs.caller_run_id }}
+          caller_repository: ${{ inputs.caller_repository }}
           lambda_alias: ${{ inputs.lambda_alias }}
 
       - name: ci/assert-logs
@@ -83,6 +94,8 @@ jobs:
         uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@e955c1ec2a75c14662f0b1c3a5a14b8227b8082f # e2e-test-stack-actions
         with:
           batch_id: ${{ inputs.batch_id }}
+          caller_run_id: ${{ inputs.caller_run_id }}
+          caller_repository: ${{ inputs.caller_repository }}
           lambda_alias: ${{ inputs.lambda_alias }}
 
       - name: ci/probe-gone
