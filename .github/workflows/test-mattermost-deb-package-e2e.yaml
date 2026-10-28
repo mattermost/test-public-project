@@ -1,7 +1,7 @@
 # E2E smoke for the published Mattermost deb package on each supported Ubuntu release.
 # Installs it from deb.packages.mattermost.com with the published repo-setup.sh (as customers do),
-# runs the server under real systemd on a hosted VM, and executes the Playwright @smoke suite
-# from the matching mattermost/mattermost release tag against it.
+# runs the server under real systemd on a hosted VM, and executes the license-free Playwright
+# @core suite from mattermost/mattermost against it.
 
 name: Test Mattermost Deb Package E2E
 
@@ -100,11 +100,12 @@ jobs:
             echo "distro=${DISTRO}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: ci/checkout-mattermost-release-tests
+      - name: ci/checkout-mattermost-tests
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: mattermost/mattermost
-          ref: v${{ steps.version.outputs.mm_version }}
+          # @core is not in a release tag yet.
+          ref: nasimoes/e2e-core-tag
           path: ${{ env.MM_SRC }}
           persist-credentials: false
           fetch-depth: 1
@@ -250,9 +251,10 @@ jobs:
           npm run build
           npx playwright test --project=setup
 
-      - name: ci/run-playwright-smoke
+      - name: ci/run-playwright-core
+        # Team Edition server with no license: @core only covers license-free specs.
         working-directory: ${{ env.MM_SRC }}/e2e-tests/playwright
-        run: npx playwright test --project=chrome --grep @smoke --retries=1 --no-deps
+        run: npx playwright test --project=chrome --grep @core --retries=1 --no-deps
 
       - name: ci/summary
         if: always()
