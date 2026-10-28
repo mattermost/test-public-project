@@ -185,10 +185,12 @@ jobs:
           systemctl is-active mattermost
 
           curl -fsS --retry 10 --retry-connrefused --retry-delay 3 "${PW_BASE_URL}/api/v4/system/ping" | jq -e '.status == "OK"'
-          if ! curl -fsSI "${PW_BASE_URL}/api/v4/system/ping" | grep -qiE "^x-version-id: ${MM_VERSION//./\\.}\."; then
-            echo "::error::Running server does not report version ${MM_VERSION}"
+          VERSION_HEADER="$(curl -fsS -D - -o /dev/null "${PW_BASE_URL}/api/v4/system/ping" | grep -i '^x-version-id:' | tr -d '\r' || true)"
+          if ! grep -qiE "^x-version-id: ${MM_VERSION//./\\.}\." <<<"${VERSION_HEADER}"; then
+            echo "::error::Running server does not report version ${MM_VERSION} (${VERSION_HEADER:-no X-Version-Id header})"
             exit 1
           fi
+          echo "${VERSION_HEADER}"
 
       - name: ci/setup-node
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
