@@ -40,6 +40,8 @@ jobs:
       contents: read
     env:
       PW_BASE_URL: http://localhost:8065
+      PW_HEADLESS: "true"
+      PW_WORKERS: "1"
       MM_SRC: mattermost
       MM_APT_URL: https://deb.packages.mattermost.com
 
@@ -240,13 +242,17 @@ jobs:
           npm ci
           npx playwright install chromium
 
+      - name: ci/run-playwright-setup
+        # Same split as the official CI: admin, plugins and server checks run once, so a broken
+        # package fails here rather than as a wall of smoke failures.
+        working-directory: ${{ env.MM_SRC }}/e2e-tests/playwright
+        run: |
+          npm run build
+          npx playwright test --project=setup
+
       - name: ci/run-playwright-smoke
         working-directory: ${{ env.MM_SRC }}/e2e-tests/playwright
-        env:
-          CI: "true"
-          PW_HEADLESS: "true"
-          PW_WORKERS: "1"
-        run: npm run test:smoke
+        run: npx playwright test --project=chrome --grep @smoke --retries=1 --no-deps
 
       - name: ci/summary
         if: always()
