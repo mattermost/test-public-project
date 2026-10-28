@@ -150,11 +150,12 @@ jobs:
             | (cd / && sudo -u postgres psql -q -v ON_ERROR_STOP=1)
 
           CONFIG="${RUNNER_TEMP}/config.json"
-          DB_PASSWORD="${DB_PASSWORD}" jq --arg url "${PW_BASE_URL}" '
-            .SqlSettings.DriverName = "postgres" |
-            .SqlSettings.DataSource = "postgres://mmuser:\(env.DB_PASSWORD)@localhost:5432/mattermost?sslmode=disable&connect_timeout=10" |
-            .ServiceSettings.SiteURL = $url
-          ' /opt/mattermost/config/config.defaults.json > "${CONFIG}"
+          sudo cat /opt/mattermost/config/config.defaults.json \
+            | DB_PASSWORD="${DB_PASSWORD}" jq --arg url "${PW_BASE_URL}" '
+                .SqlSettings.DriverName = "postgres" |
+                .SqlSettings.DataSource = "postgres://mmuser:\(env.DB_PASSWORD)@localhost:5432/mattermost?sslmode=disable&connect_timeout=10" |
+                .ServiceSettings.SiteURL = $url
+              ' > "${CONFIG}"
           unset DB_PASSWORD
           sudo install -m 0600 -o mattermost -g mattermost "${CONFIG}" /opt/mattermost/config/config.json
           rm -f "${CONFIG}"
