@@ -105,7 +105,7 @@ jobs:
         with:
           repository: mattermost/mattermost
           # @core is not in a release tag yet.
-          ref: nasimoes/e2e-core-tag
+          ref: v${{ steps.version.outputs.mm_version }}
           path: ${{ env.MM_SRC }}
           persist-credentials: false
           fetch-depth: 1
