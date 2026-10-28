@@ -1,0 +1,256 @@
+# E2E smoke for the published Mattermost deb package on each supported Ubuntu release.
+# Installs it from deb.packages.mattermost.com with the published repo-setup.sh (as customers do),
+# runs the server under real systemd on a hosted VM, and executes the Playwright @smoke suite
+# from the matching mattermost/mattermost release tag against it.
+
+name: Test Mattermost Deb Package E2E
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Weekly, Monday 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      mattermost_version:
+        description: "Published version to test, e.g. 11.11.3. Empty = latest published for each distro."
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/test-mattermost-deb-package-e2e.yaml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - ubuntu-24.04
+          - ubuntu-26.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      PW_BASE_URL: http://localhost:8065
+      MM_SRC: mattermost
+      MM_APT_URL: https://deb.packages.mattermost.com
+
+    steps:
+      # --- Privileged phase -------------------------------------------------------------
+      - name: ci/setup-mattermost-apt-repo
+        env:
+          # Update only after reviewing the published script's changes.
+          REPO_SETUP_SHA256: 04b32294c647bec6ecbae048eaa112e59f4a6217f2ca7ea3b8784b72381e93ed
+        run: |
+          set -euo pipefail
+          SETUP_SCRIPT="${RUNNER_TEMP}/repo-setup.sh"
+          curl -fsSL "${MM_APT_URL}/repo-setup.sh" -o "${SETUP_SCRIPT}"
+          if ! echo "${REPO_SETUP_SHA256}  ${SETUP_SCRIPT}" | sha256sum -c --quiet -; then
+            echo "::error::${MM_APT_URL}/repo-setup.sh changed (sha256 $(sha256sum "${SETUP_SCRIPT}" | cut -d' ' -f1)); review it and update REPO_SETUP_SHA256"
+            exit 1
+          fi
+          sudo bash "${SETUP_SCRIPT}" mattermost
+
+      - name: ci/resolve-version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.mattermost_version }}
+        run: |
+          set -euo pipefail
+          DISTRO="$(lsb_release -cs)"
+          AVAILABLE="$(apt-cache madison mattermost | awk '{print $3}')"
+          if [ -z "${AVAILABLE}" ]; then
+            echo "::error::No mattermost package published for ${DISTRO}"
+            exit 1
+          fi
+
+          if [ -n "${REQUESTED_VERSION}" ]; then
+            if ! [[ "${REQUESTED_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Invalid mattermost_version: ${REQUESTED_VERSION}"
+              exit 1
+            fi
+            DEB_VERSION="$(grep -E "^${REQUESTED_VERSION//./\\.}-[0-9]+$" <<<"${AVAILABLE}" | sort -V | tail -n1 || true)"
+          else
+            DEB_VERSION="$(sort -V <<<"${AVAILABLE}" | tail -n1)"
+          fi
+          if [ -z "${DEB_VERSION}" ]; then
+            echo "::error::mattermost ${REQUESTED_VERSION} is not published for ${DISTRO}"
+            exit 1
+          fi
+
+          MM_VERSION="${DEB_VERSION%-*}"
+          if ! [[ "${MM_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Unexpected package version: ${DEB_VERSION}"
+            exit 1
+          fi
+          echo "Testing mattermost=${DEB_VERSION} on ${DISTRO}"
+          {
+            echo "deb_version=${DEB_VERSION}"
+            echo "mm_version=${MM_VERSION}"
+            echo "distro=${DISTRO}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: ci/checkout-mattermost-release-tests
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: mattermost/mattermost
+          ref: v${{ steps.version.outputs.mm_version }}
+          path: ${{ env.MM_SRC }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: ci/install-postgresql
+        # The distro's own PostgreSQL, as a customer on this release would install it.
+        # The role gets its password in ci/configure-and-start-mattermost.
+        id: postgres
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql
+          sudo systemctl start postgresql
+          for _ in $(seq 1 30); do
+            pg_isready -h 127.0.0.1 -q && break
+            sleep 2
+          done
+          pg_isready -h 127.0.0.1
+          cd /
+          sudo -u postgres psql -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE mmuser WITH LOGIN;" \
+            -c "CREATE DATABASE mattermost OWNER mmuser;"
+          echo "version=$(sudo -u postgres psql -tAc 'SHOW server_version')" >> "${GITHUB_OUTPUT}"
+
+      - name: ci/install-mattermost-deb
+        env:
+          DEB_VERSION: ${{ steps.version.outputs.deb_version }}
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "mattermost=${DEB_VERSION}"
+          id mattermost
+          systemctl is-enabled mattermost
+
+      - name: ci/configure-and-start-mattermost
+        env:
+          MM_VERSION: ${{ steps.version.outputs.mm_version }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          # Per-run DB password: masked, never in argv or GITHUB_ENV, and only readable by the
+          # mattermost user (config.json 0600) once privileges are dropped.
+          DB_PASSWORD="$(openssl rand -hex 24)"
+          echo "::add-mask::${DB_PASSWORD}"
+          printf "ALTER ROLE mmuser WITH PASSWORD '%s';\n" "${DB_PASSWORD}" \
+            | (cd / && sudo -u postgres psql -q -v ON_ERROR_STOP=1)
+
+          CONFIG="${RUNNER_TEMP}/config.json"
+          DB_PASSWORD="${DB_PASSWORD}" jq --arg url "${PW_BASE_URL}" '
+            .SqlSettings.DriverName = "postgres" |
+            .SqlSettings.DataSource = "postgres://mmuser:\(env.DB_PASSWORD)@localhost:5432/mattermost?sslmode=disable&connect_timeout=10" |
+            .ServiceSettings.SiteURL = $url
+          ' /opt/mattermost/config/config.defaults.json > "${CONFIG}"
+          unset DB_PASSWORD
+          sudo install -m 0600 -o mattermost -g mattermost "${CONFIG}" /opt/mattermost/config/config.json
+          rm -f "${CONFIG}"
+
+          # Boot with the same test env the Playwright suite expects (e.g. plugin uploads),
+          # taken from the release tag so it tracks the tests being run.
+          BASELINE="${MM_SRC}/e2e-tests/playwright/lib/src/containers/env_baseline.ts"
+          if [ ! -f "${BASELINE}" ]; then
+            echo "::error::${BASELINE} not found at v${MM_VERSION}"
+            exit 1
+          fi
+          DROPIN="${RUNNER_TEMP}/e2e.conf"
+          {
+            echo "[Service]"
+            sed -nE "s/^[[:space:]]*(MM_[A-Z0-9_]+): '([^'\"%\\\\]*)',?$/Environment=\"\1=\2\"/p" "${BASELINE}"
+          } > "${DROPIN}"
+          if ! grep -qx 'Environment="MM_PLUGINSETTINGS_ENABLEUPLOADS=true"' "${DROPIN}"; then
+            echo "::error::Unexpected test env baseline in ${BASELINE}"
+            cat "${DROPIN}"
+            exit 1
+          fi
+          sudo install -D -m 0644 "${DROPIN}" /etc/systemd/system/mattermost.service.d/e2e.conf
+          sudo systemctl daemon-reload
+
+          # Type=notify: start blocks until the server reports ready.
+          sudo timeout 300 systemctl start mattermost
+          systemctl is-active mattermost
+
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 3 "${PW_BASE_URL}/api/v4/system/ping" | jq -e '.status == "OK"'
+          if ! curl -fsSI "${PW_BASE_URL}/api/v4/system/ping" | grep -qiE "^x-version-id: ${MM_VERSION//./\\.}\."; then
+            echo "::error::Running server does not report version ${MM_VERSION}"
+            exit 1
+          fi
+
+      - name: ci/setup-node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version-file: ${{ env.MM_SRC }}/.nvmrc
+
+      - name: ci/install-browser-system-deps
+        # Packages come from the release tag's lockfile (integrity-checked) with lifecycle scripts
+        # disabled, so the only npm code run before the drop is the Playwright CLI, which calls
+        # sudo for apt. ci/install-playwright reinstalls with scripts after the drop.
+        working-directory: ${{ env.MM_SRC }}/e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx --no-install playwright install-deps chromium
+
+      - name: ci/drop-privileges
+        run: |
+          set -euo pipefail
+          sudo systemctl disable --now docker.socket docker.service 2>/dev/null || true
+          # shellcheck disable=SC2016
+          sudo sh -c 'grep -rlE "^[[:space:]]*$1[[:space:]]" /etc/sudoers.d | xargs -r rm -f' _ "$(id -un)"
+
+          if sudo -n true 2>/dev/null; then
+            echo "::error::sudo is still available to $(id -un)"
+            exit 1
+          fi
+          if docker info >/dev/null 2>&1; then
+            echo "::error::Docker is still reachable"
+            exit 1
+          fi
+          echo "sudo and Docker access removed"
+
+      # --- Unprivileged phase: third-party npm code runs from here on -------------------
+      - name: ci/install-webapp-platform-deps
+        # Playwright links @mattermost/{client,types} from webapp/platform; they must be built first.
+        working-directory: ${{ env.MM_SRC }}/webapp
+        run: make node_modules
+
+      - name: ci/install-playwright
+        working-directory: ${{ env.MM_SRC }}/e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          npm ci
+          npx playwright install chromium
+
+      - name: ci/run-playwright-smoke
+        working-directory: ${{ env.MM_SRC }}/e2e-tests/playwright
+        env:
+          CI: "true"
+          PW_HEADLESS: "true"
+          PW_WORKERS: "1"
+        run: npm run test:smoke
+
+      - name: ci/summary
+        if: always()
+        env:
+          OS: ${{ matrix.os }}
+          DISTRO: ${{ steps.version.outputs.distro }}
+          DEB_VERSION: ${{ steps.version.outputs.deb_version }}
+          PG_VERSION: ${{ steps.postgres.outputs.version }}
+          JOB_STATUS: ${{ job.status }}
+        run: echo "| ${OS} (${DISTRO}) | mattermost=${DEB_VERSION} | postgres ${PG_VERSION} | ${JOB_STATUS} |" >> "${GITHUB_STEP_SUMMARY}"
