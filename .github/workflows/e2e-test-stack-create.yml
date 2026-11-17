@@ -1,59 +1,62 @@
 ---
-name: E2E Test Stack - Create and Validate
+name: E2E Test Stack - Lifecycle
 
-# Leases test servers, then checks them:
+# Every operation of the e2e-test-stack action, the way a test repository uses it:
 #
-#   every site answers unauthenticated
-#   every site accepts the admin credentials
+#   create   one batch of servers, then fetch it whole by batch id and token
+#   test     one job per server: fetch its credentials from the uploaded create
+#            response, run the Playwright suite in e2e-test-stack/, collect its logs
+#   destroy  release the batch from the create response, check every site stops
+#            serving, then destroy again and expect "not found"
 #
-# Nothing is released here. The batch lives out its TTL unless
-# e2e-test-stack-destroy.yml is run with the batch_id and caller_run_id
-# this prints.
+# The CI role trusts only this file and e2e-test-stack-destroy.yml, on master.
+# With keep, the batch is left for e2e-test-stack-destroy.yml.
 #
-# Every input the create action takes is exposed, so each can be exercised from
-# the Actions tab.
+# Re-run all jobs, not failed jobs: destroy has already released the batch the
+# failed jobs would fetch. A re-run's instance key carries its attempt number.
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/e2e-test-stack-*.yml
+      - e2e-test-stack/**
   workflow_dispatch:
     inputs:
-      instance_key:
-        description: "Names the stack, and its hostname. Lowercase letters, digits and hyphens, 24 characters or fewer."
-        required: true
-        type: string
-      server_image:
-        description: "Mattermost server image on Docker Hub, by tag, e.g. mattermostdevelopment/mattermost-enterprise-edition:master"
-        required: false
-        type: string
-        default: "mattermostdevelopment/mattermost-enterprise-edition:master"
-      count:
-        description: "Instances to create, from 1 to 40"
-        required: false
-        type: string
-        default: "1"
-      lambda_alias:
-        description: "Control plane to invoke"
+      channel:
+        description: "Control plane channel"
         required: false
         type: choice
         options: ["v1", "edge"]
         default: "v1"
+      server_image:
+        description: "Mattermost server image on Docker Hub, by tag"
+        required: false
+        type: string
+        default: "mattermostdevelopment/mattermost-enterprise-edition:master"
+      count:
+        description: "Servers to create, one test job each"
+        required: false
+        type: string
+        default: "3"
       services:
-        description: "Comma-separated optional services, e.g. 'keycloak,minio'. One or more of: minio or azurite, elasticsearch or opensearch, keycloak, openldap. Each 'or' pair sets the same boot setting, so only one of each may run. Empty runs Postgres, Inbucket and the server alone. Everything at once is 'minio,elasticsearch,keycloak,openldap'."
+        description: "Comma-separated optional services: minio or azurite, elasticsearch or opensearch, keycloak, openldap"
         required: false
         type: string
         default: ""
       ttl:
-        description: "Lifetime before the reaper takes it - 90m, 4h"
+        description: "Lifetime before the reaper takes the batch - 90m, 4h"
         required: false
         type: string
         default: "1h"
       os:
-        description: "Operating system the stack runs on"
+        description: "Operating system the servers run on"
         required: false
         type: choice
         options: ["ubuntu-24.04", "ubuntu-26.04"]
         default: "ubuntu-24.04"
       postgres:
-        description: "Postgres version - '14', '15', '16', '17', '18'. Empty uses the pin's default (currently 16)."
+        description: "Postgres version - '14' to '18'. Empty uses the stack's default."
         required: false
         type: string
         default: ""
@@ -61,9 +64,9 @@ on:
         description: "Licence SKU - 'enterprise-advanced'. Empty runs unlicensed."
         required: false
         type: string
-        default: ""
+        default: "enterprise-advanced"
       server_env:
-        description: "Server settings to override at boot, as a JSON object - e.g. '{\"MM_FEATUREFLAGS_TESTFEATURE\":\"true\"}'. Merged over the baseline."
+        description: "Server settings as a JSON object of strings, e.g. '{\"MM_FEATUREFLAGS_TESTFEATURE\":\"true\"}'"
         required: false
         type: string
         default: ""
@@ -77,233 +80,316 @@ on:
         required: false
         type: boolean
         default: true
+      keep:
+        description: "Leave the batch running, for e2e-test-stack-destroy.yml"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   id-token: write
 
+# Never cancelled: a create cancelled while it waits leaves its batch running until its TTL.
+concurrency:
+  group: e2e-test-stack-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CALLER_KEY: test-public-project
+  CHANNEL: ${{ inputs.channel || 'v1' }}
+  # A dispatch's empty licence runs unlicensed; a push runs licensed.
+  LICENSE: ${{ github.event_name == 'workflow_dispatch' && inputs.license || (github.event_name != 'workflow_dispatch' && 'enterprise-advanced' || '') }}
+  RESPONSE_FILE: e2e-test-stack-create.json
+
 jobs:
   create:
     runs-on: ubuntu-24.04
+    outputs:
+      batch-id: ${{ steps.create.outputs.batch-id }}
+      sites: ${{ steps.create.outputs.sites }}
+      indexes: ${{ steps.indexes.outputs.indexes }}
     steps:
-      # Once. Every step below inherits these credentials.
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
       - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3 (2026-07-22)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
           aws-region: us-east-1
-          role-duration-seconds: 1200
 
       - name: ci/create
-        id: stack
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-create@b016374e8dca6b8b7ca14d2787f8fc21e72ca0e2 # e2e-test-stack-actions
+        id: create
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
         with:
-          instance_key: ${{ inputs.instance_key }}
-          server_image: ${{ inputs.server_image }}
-          count: ${{ inputs.count }}
-          lambda_alias: ${{ inputs.lambda_alias }}
+          operation: create
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          instance-key: tpp-${{ github.run_number }}-${{ github.run_attempt }}
+          server-image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
+          count: ${{ inputs.count || '3' }}
           services: ${{ inputs.services }}
-          ttl: ${{ inputs.ttl }}
-          os: ${{ inputs.os }}
+          ttl: ${{ inputs.ttl || '1h' }}
+          os: ${{ inputs.os || 'ubuntu-24.04' }}
           postgres: ${{ inputs.postgres }}
-          license: ${{ inputs.license }}
-          server_env: ${{ inputs.server_env }}
-          wait_for_migrations: ${{ inputs.wait_for_migrations }}
-          shared_admin_password: ${{ inputs.shared_admin_password }}
+          license: ${{ env.LICENSE }}
+          server-env: ${{ inputs.server_env }}
+          wait-for-migrations: ${{ inputs.wait_for_migrations == true }}
+          shared-admin-password: ${{ github.event_name != 'workflow_dispatch' || inputs.shared_admin_password }}
+          response-path: ${{ runner.temp }}/${{ env.RESPONSE_FILE }}
 
-      - name: ci/logs
-        id: logs
-        if: always() && steps.stack.outputs.batch_id != ''
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-logs@b016374e8dca6b8b7ca14d2787f8fc21e72ca0e2 # e2e-test-stack-actions
+      # Its secrets are sealed to this repository's key, so it is safe to upload from a public repository.
+      - name: ci/upload-create-response
+        if: always() && steps.create.outputs.response-path != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          batch_id: ${{ steps.stack.outputs.batch_id }}
-          lambda_alias: ${{ inputs.lambda_alias }}
+          name: e2e-test-stack-create
+          path: ${{ steps.create.outputs.response-path }}
+          if-no-files-found: error
 
-      - name: ci/assert-logs
-        id: assert-logs
-        if: always() && steps.logs.outputs.path != ''
+      - name: ci/fetch-batch
+        id: fetch
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        with:
+          operation: fetch
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          batch-id: ${{ steps.create.outputs.batch-id }}
+          batch-token: ${{ steps.create.outputs.batch-token }}
+
+      - name: ci/assert-batch
+        id: indexes
         env:
-          LOG_PATH: ${{ steps.logs.outputs.path }}
-          CONTAINERS: ${{ steps.logs.outputs.containers }}
+          STATE: ${{ steps.fetch.outputs.state }}
+          READY: ${{ steps.fetch.outputs.ready }}
+          WANT: ${{ inputs.count || '3' }}
         run: |
           set -euo pipefail
-
-          lines=$(wc -l < "$LOG_PATH")
-          if [ "$lines" -eq 0 ]; then
-            echo "::error::log file is empty"
+          if [ "$STATE" != ready ] || [ "$READY" != "$WANT" ]; then
+            echo "::error::fetch says state '${STATE}' with ${READY} of ${WANT} ready"
             exit 1
           fi
-          echo "  ${lines} line(s)"
+          echo "indexes=$(jq -nc --argjson n "$WANT" '[range($n)]')" >> "$GITHUB_OUTPUT"
 
-          count=$(jq 'length' <<< "$CONTAINERS")
-          if [ "$count" -eq 0 ]; then
-            echo "::error::no containers in the log"
-            exit 1
-          fi
-          jq -r '.[] | "  holds " + .' <<< "$CONTAINERS"
-
-      - name: ci/upload-logs
-        id: upload-logs
-        if: always() && steps.logs.outputs.path != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-logs-${{ steps.stack.outputs.batch_id }}
-          path: |
-            ${{ steps.logs.outputs.path }}
-            ${{ steps.logs.outputs.full_path }}
-          if-no-files-found: warn
-
-      - name: ci/probe-unauthenticated
-        id: probe-unauth
-        if: always() && steps.stack.outputs.batch_id != ''
-        env:
-          SITES: ${{ steps.stack.outputs.sites }}
-        run: |
-          set -euo pipefail
-
-          # The ping endpoint needs no session, so a 200 means the stack is
-          # serving, not just resolving.
-          failed=0
-          for site in $(jq -r '.[]' <<< "$SITES"); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "${site}/api/v4/system/ping" || echo "000")
-            if [ "$code" = "200" ]; then
-              echo "  reachable      ${site}"
-            else
-              echo "::error::${site} answered ${code}, want 200"
-              failed=1
-            fi
-          done
-          exit $failed
-
-      - name: ci/credentials
-        id: creds
-        if: always() && steps.stack.outputs.batch_id != ''
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-credentials@b016374e8dca6b8b7ca14d2787f8fc21e72ca0e2 # e2e-test-stack-actions
-        with:
-          batch_id: ${{ steps.stack.outputs.batch_id }}
-          lambda_alias: ${{ inputs.lambda_alias }}
-
-      - name: ci/probe-authenticated
-        id: probe-auth
-        if: always() && steps.stack.outputs.batch_id != ''
-        env:
-          # Through env, never inside the run body: an expression referenced
-          # there is rendered into the log.
-          INSTANCES: ${{ steps.creds.outputs.instances }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "$INSTANCES" ] || [ "$INSTANCES" = "[]" ]; then
-            echo "::error::no credentials were fetched, so nothing can be checked"
-            exit 1
-          fi
-
-          failed=0
-          # Each instance with its own admin, so this holds whether or not the
-          # batch was asked to share one password.
-          while read -r entry; do
-            site=$(jq -r '.site_url' <<< "$entry")
-            user=$(jq -r '.admin_username' <<< "$entry")
-            pass=$(jq -r '.admin_password' <<< "$entry")
-
-            # Logging in checks the admin account exists and that its password
-            # is the one reported.
-            body=$(jq -nc --arg id "$user" --arg pw "$pass" \
-              '{login_id: $id, password: $pw}')
-
-            token=$(curl -sS -D - -o /dev/null --max-time 30 \
-              -H 'Content-Type: application/json' \
-              -d "$body" "${site}/api/v4/users/login" \
-              | tr -d '\r' | awk '/^[Tt]oken: /{print $2}')
-
-            if [ -z "$token" ]; then
-              echo "::error::${site} did not issue a session for ${user}"
-              failed=1
-              continue
-            fi
-            echo "::add-mask::${token}"
-
-            role=$(curl -sS --max-time 30 -H "Authorization: Bearer ${token}" \
-              "${site}/api/v4/users/me" | jq -r '.roles // ""')
-            case "$role" in
-              *system_admin*) echo "  authenticated  ${site}" ;;
-              *)
-                echo "::error::${site} logged in but the account is not an admin: '${role}'"
-                failed=1
-                ;;
-            esac
-          done < <(jq -c '.[]' <<< "$INSTANCES")
-          exit $failed
-
-      # The batch is still running. What the destroy workflow needs to release
-      # it goes here, because nothing else records it.
       - name: ci/summary
-        if: always() && steps.stack.outputs.batch_id != ''
+        if: always() && steps.create.outputs.batch-id != ''
         env:
-          BATCH_ID: ${{ steps.stack.outputs.batch_id }}
-          CALLER_REPOSITORY: ${{ steps.stack.outputs.caller_repository }}
-          CALLER_RUN_ID: ${{ steps.stack.outputs.caller_run_id }}
-          SITES: ${{ steps.stack.outputs.sites }}
-          READY: ${{ steps.stack.outputs.ready }}
-          LOGS: ${{ steps.logs.outcome }}
-          ASSERT_LOGS: ${{ steps.assert-logs.outcome }}
-          UPLOAD_LOGS: ${{ steps.upload-logs.outcome }}
-          UNAUTH: ${{ steps.probe-unauth.outcome }}
-          CREDS: ${{ steps.creds.outcome }}
-          AUTH: ${{ steps.probe-auth.outcome }}
+          BATCH_ID: ${{ steps.create.outputs.batch-id }}
+          VERSION: ${{ steps.create.outputs.deployment-version }}
+          READY: ${{ steps.fetch.outputs.ready }}
+          SITES: ${{ steps.create.outputs.sites }}
         run: |
-          set -euo pipefail
-
-          status() {
-            case "$1" in
-              success) echo "pass" ;;
-              failure) echo "**FAIL**" ;;
-              '') echo "not run" ;;
-              *) echo "$1" ;;
-            esac
-          }
-
-          # A check that never ran is not a pass, so it is called out separately
-          # from one that did and failed.
-          overall=pass
-          for outcome in "$LOGS" "$ASSERT_LOGS" "$UPLOAD_LOGS" "$UNAUTH" "$CREDS" "$AUTH"; do
-            if [ "$outcome" = failure ]; then
-              overall="**FAIL**"
-              break
-            fi
-            if [ "$outcome" != success ] && [ "$overall" = pass ]; then
-              overall=incomplete
-            fi
-          done
           {
-            echo "### Validation — ${overall}"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-            echo "| Instances ready | ${READY:-0} |"
-            echo "| Logs collected | $(status "$LOGS") |"
-            echo "| Log assertions | $(status "$ASSERT_LOGS") |"
-            echo "| Logs uploaded | $(status "$UPLOAD_LOGS") |"
-            echo "| Reachable unauthenticated | $(status "$UNAUTH") |"
-            echo "| Credentials fetched | $(status "$CREDS") |"
-            echo "| Admin credentials accepted | $(status "$AUTH") |"
-            echo
-            echo "### Still running"
+            echo "### Create"
             echo
             echo "| Item | Value |"
             echo "|---|---|"
-            echo "| \`batch_id\` | \`${BATCH_ID}\` |"
-            echo "| \`caller_run_id\` | \`${CALLER_RUN_ID}\` |"
-            echo "| \`caller_repository\` | \`${CALLER_REPOSITORY}\` |"
-            echo "| \`sites\` | \`${SITES}\` |"
-            echo
-            echo "Release it with **E2E Test Stack - Destroy and Validate**. Pass"
-            echo "\`batch_id\` and \`caller_run_id\` from this table (same repository)."
+            echo "| Batch | \`${BATCH_ID}\` |"
+            echo "| Channel | \`${CHANNEL}\`, version ${VERSION:-unknown} |"
+            echo "| Ready (fetched) | ${READY:-0} |"
+            jq -r 'to_entries[] | "| Site \(.key) | \(.value) |"' <<< "$SITES"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # The summary is the verdict, so the job carries it. A check that did
-          # not run leaves the run unproven, which is not a pass either.
-          if [ "$overall" != pass ]; then
-            echo "::error::validation ${overall//\*/}"
+  test:
+    needs: create
+    if: needs.create.result == 'success'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        index: ${{ fromJSON(needs.create.outputs.indexes) }}
+    name: test (server ${{ matrix.index }})
+    defaults:
+      run:
+        working-directory: e2e-test-stack
+    steps:
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: e2e-test-stack/package-lock.json
+
+      - name: ci/download-create-response
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
+      - name: ci/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # Job outputs cannot carry masked values, so each job fetches its own server's credentials.
+      - name: ci/fetch-server
+        id: fetch
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        with:
+          operation: fetch
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
+          indexes: ${{ matrix.index }}
+
+      - name: ci/install
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: ci/test
+        env:
+          SITE_URL: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].site_url }}
+          ADMIN_USERNAME: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].admin_username }}
+          ADMIN_PASSWORD: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].admin_password }}
+          MAIL_TOKEN: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].mail_token }}
+          EXPECT_LICENSED: ${{ env.LICENSE != '' }}
+        run: npm test
+
+      # Screenshots of failed tests only: the HTML report records the values typed into the page.
+      - name: ci/upload-screenshots
+        if: failure() && steps.fetch.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: screenshots-${{ matrix.index }}
+          path: e2e-test-stack/test-results/**/*.png
+          if-no-files-found: ignore
+
+      # The first session may have expired during the tests.
+      - name: ci/refresh-aws-credentials
+        if: always() && steps.fetch.outcome == 'success'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # The decoded tail may hold secrets, so it is read here and never uploaded.
+      - name: ci/logs
+        id: logs
+        if: always() && steps.fetch.outcome == 'success'
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        with:
+          operation: logs
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
+          index: ${{ matrix.index }}
+
+      - name: ci/assert-logs
+        if: always() && steps.logs.outcome == 'success'
+        env:
+          LOGS_PATH: ${{ steps.logs.outputs.logs-path }}
+          LOGS_URL: ${{ steps.logs.outputs.logs-url }}
+        run: |
+          set -euo pipefail
+          if [ -z "$LOGS_PATH" ] || [ ! -s "$LOGS_PATH" ]; then
+            echo "::error::logs returned no tail"
             exit 1
           fi
+          if [ -z "$LOGS_URL" ]; then
+            echo "::error::logs returned no URL for the full log"
+            exit 1
+          fi
+          echo "  $(wc -l < "$LOGS_PATH") line(s) in the tail"
+
+  destroy:
+    needs: [create, test]
+    if: always() && needs.create.outputs.batch-id != '' && inputs.keep != true
+    runs-on: ubuntu-24.04
+    steps:
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: e2e-test-stack/scripts
+
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: ci/download-create-response
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
+      - name: ci/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: ci/destroy
+        id: destroy
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        with:
+          operation: destroy
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
+
+      - name: ci/assert-destroyed
+        env:
+          STATE: ${{ steps.destroy.outputs.state }}
+        run: |
+          if [ "$STATE" != destroyed ]; then
+            echo "::error::destroy says state '${STATE}', want destroyed"
+            exit 1
+          fi
+
+      - name: ci/probe-gone
+        if: contains(needs.create.outputs.sites, 'https://')
+        env:
+          SITES: ${{ needs.create.outputs.sites }}
+        run: e2e-test-stack/scripts/probe-gone.sh
+
+      - name: ci/destroy-again
+        id: again
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        with:
+          operation: destroy
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
+
+      - name: ci/assert-not-found
+        env:
+          STATE: ${{ steps.again.outputs.state }}
+        run: |
+          if [ "$STATE" != "not found" ]; then
+            echo "::error::a second destroy says state '${STATE}', want 'not found'"
+            exit 1
+          fi
+
+      - name: ci/summary
+        if: always()
+        env:
+          STATE: ${{ steps.destroy.outputs.state }}
+          AGAIN: ${{ steps.again.outputs.state }}
+        run: |
+          {
+            echo "### Destroy"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Destroy | ${STATE:-not run} |"
+            echo "| Destroy again | ${AGAIN:-not run} |"
+          } >> "$GITHUB_STEP_SUMMARY"
