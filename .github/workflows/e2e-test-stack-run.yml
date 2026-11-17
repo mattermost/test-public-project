@@ -154,7 +154,7 @@ jobs:
 
       - name: ci/open-server
         id: server
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: open
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
