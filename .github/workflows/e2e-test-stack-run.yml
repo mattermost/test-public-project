@@ -1,10 +1,22 @@
 ---
 name: E2E Test Stack - Run
 
-# Starts the lifecycle in e2e-test-stack-create.yml, which this repository's CI
-# role trusts, the way an existing E2E workflow calls it: this file holds the
-# triggers and the choices; the called file creates the servers, runs the
-# suite against each and destroys them.
+# The E2E workflow: creates a batch of servers, runs the Playwright suite in
+# e2e-test-stack/ against each in a matrix, and destroys the batch, the way an
+# existing E2E workflow uses the stack.
+#
+#   create   calls e2e-test-stack-create.yml: create, fetch to check, upload
+#            the sealed create response
+#   test     one job per server, here: open that server's credentials from the
+#            create response with the private key (no AWS), run the suite
+#   destroy  calls e2e-test-stack-destroy.yml: every server's logs, destroy,
+#            the router's 404 for each site and mail host, destroy again
+#
+# Only the two called files make AWS calls: the CI role trusts only them. With
+# keep, the batch is left for e2e-test-stack-destroy.yml, run by hand.
+#
+# Re-run all jobs, not failed jobs: destroy has already released the batch the
+# failed jobs would test. A re-run's instance key carries its attempt number.
 
 on:
   push:
@@ -86,13 +98,14 @@ permissions:
   contents: read
 
 jobs:
-  lifecycle:
+  create:
     # A called workflow gets no more than the caller grants.
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-create.yml
-    # A push has no inputs, so each choice falls back to the dispatch default.
+    # A push has no inputs, so each choice falls back to the dispatch default. A
+    # dispatch's empty licence runs unlicensed; a push runs licensed.
     with:
       channel: ${{ inputs.channel || 'v1' }}
       server_image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
@@ -101,11 +114,89 @@ jobs:
       ttl: ${{ inputs.ttl || '1h' }}
       os: ${{ inputs.os || 'ubuntu-24.04' }}
       postgres: ${{ inputs.postgres }}
-      # A dispatch's empty licence runs unlicensed; a push runs licensed.
       license: ${{ github.event_name == 'workflow_dispatch' && inputs.license || (github.event_name != 'workflow_dispatch' && 'enterprise-advanced' || '') }}
       server_env: ${{ inputs.server_env }}
       wait_for_migrations: ${{ inputs.wait_for_migrations == true }}
       shared_admin_password: ${{ github.event_name != 'workflow_dispatch' || inputs.shared_admin_password }}
-      keep: ${{ inputs.keep == true }}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+
+  # No AWS here: each job opens its own server's credentials from the create response.
+  test:
+    needs: create
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        index: ${{ fromJSON(needs.create.outputs.indexes) }}
+    name: test (server ${{ matrix.index }})
+    defaults:
+      run:
+        working-directory: e2e-test-stack
+    steps:
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: e2e-test-stack/package-lock.json
+
+      - name: ci/download-create-response
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
+      - name: ci/open-server
+        id: server
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        with:
+          operation: open
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+          index: ${{ matrix.index }}
+
+      - name: ci/install
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: ci/test
+        env:
+          SITE_URL: ${{ steps.server.outputs.site-url }}
+          ADMIN_USERNAME: ${{ steps.server.outputs.admin-username }}
+          ADMIN_PASSWORD: ${{ steps.server.outputs.admin-password }}
+          MAIL_TOKEN: ${{ steps.server.outputs.mail-token }}
+          EXPECT_LICENSED: ${{ needs.create.outputs.license != '' }}
+        run: npm test
+
+      # Screenshots of failed tests only: the HTML report records the values typed into the page.
+      - name: ci/upload-screenshots
+        if: failure() && steps.server.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: screenshots-${{ matrix.index }}
+          path: e2e-test-stack/test-results/**/*.png
+          if-no-files-found: ignore
+
+  destroy:
+    needs: [create, test]
+    # Whenever create ran, even if it failed partway: destroy reads the batch from the uploaded response.
+    if: always() && needs.create.result != 'skipped' && needs.create.result != 'cancelled' && inputs.keep != true
+    # actions: read is for a run by hand, which reads another run's artifact.
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-test-stack-destroy.yml
+    with:
+      channel: ${{ inputs.channel || 'v1' }}
+      indexes: ${{ needs.create.outputs.indexes }}
+      lifecycle: true
     secrets:
       E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}

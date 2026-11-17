@@ -1,21 +1,15 @@
 ---
-name: E2E Test Stack - Lifecycle
+name: E2E Test Stack - Create
 
-# Every operation of the e2e-test-stack action, the way a test repository uses it.
-# Called by e2e-test-stack-run.yml:
-#
-#   create   one batch of servers, then fetch it whole by batch id and token
-#   test     one job per server: fetch its credentials from the uploaded create
-#            response, run the Playwright suite in e2e-test-stack/, collect its logs
-#   destroy  release the batch from the create response, check every site stops
-#            serving, then destroy again and expect "not found"
+# Creates the batch for an E2E Test Stack - Run, and fetches it by batch id and
+# token to check every server came up. Uploads the create response, whose
+# secrets are sealed to this repository's key: the run's test jobs open their
+# server's credentials from it, and e2e-test-stack-destroy.yml destroys the batch
+# with it.
 #
 # The CI role trusts only jobs in this file and e2e-test-stack-destroy.yml, on
-# master. A called workflow's jobs run as this file, so any workflow on master
-# may call it. With keep, the batch is left for e2e-test-stack-destroy.yml.
-#
-# Re-run all jobs, not failed jobs: destroy has already released the batch the
-# failed jobs would fetch. A re-run's instance key carries its attempt number.
+# master. A called workflow's jobs carry its file as job_workflow_ref and the
+# caller's branch as subject, so the role trusts them.
 
 on:
   workflow_call:
@@ -64,10 +58,19 @@ on:
         description: "One admin password across the batch"
         type: boolean
         default: true
-      keep:
-        description: "Leave the batch running, for e2e-test-stack-destroy.yml"
-        type: boolean
-        default: false
+    outputs:
+      batch-id:
+        description: "The batch's id"
+        value: ${{ jobs.create.outputs.batch-id }}
+      indexes:
+        description: "JSON array of the servers' indexes, one test job each"
+        value: ${{ jobs.create.outputs.indexes }}
+      sites:
+        description: "JSON array of the servers' site URLs, index-aligned"
+        value: ${{ jobs.create.outputs.sites }}
+      license:
+        description: "The licence SKU the batch was created with; empty when unlicensed"
+        value: ${{ jobs.create.outputs.license }}
     secrets:
       E2E_STACK_PRIVATE_KEY:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
@@ -90,6 +93,7 @@ jobs:
       batch-id: ${{ steps.create.outputs.batch-id }}
       sites: ${{ steps.create.outputs.sites }}
       indexes: ${{ steps.indexes.outputs.indexes }}
+      license: ${{ inputs.license }}
     steps:
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
@@ -105,7 +109,7 @@ jobs:
 
       - name: ci/create
         id: create
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
         with:
           operation: create
           caller-key: ${{ env.CALLER_KEY }}
@@ -135,7 +139,7 @@ jobs:
 
       - name: ci/fetch-batch
         id: fetch
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
         with:
           operation: fetch
           caller-key: ${{ env.CALLER_KEY }}
@@ -177,200 +181,3 @@ jobs:
             jq -r 'to_entries[] | "| Site \(.key) | \(.value) |"' <<< "$SITES"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  test:
-    needs: create
-    if: needs.create.result == 'success'
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        index: ${{ fromJSON(needs.create.outputs.indexes) }}
-    name: test (server ${{ matrix.index }})
-    defaults:
-      run:
-        working-directory: e2e-test-stack
-    steps:
-      - name: ci/checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: ci/setup-node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: "26"
-          cache: npm
-          cache-dependency-path: e2e-test-stack/package-lock.json
-
-      - name: ci/download-create-response
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
-      - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
-      # Job outputs cannot carry masked values, so each job fetches its own server's credentials.
-      - name: ci/fetch-server
-        id: fetch
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
-        with:
-          operation: fetch
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
-          indexes: ${{ matrix.index }}
-
-      - name: ci/install
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-
-      - name: ci/test
-        env:
-          SITE_URL: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].site_url }}
-          ADMIN_USERNAME: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].admin_username }}
-          ADMIN_PASSWORD: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].admin_password }}
-          MAIL_TOKEN: ${{ fromJSON(steps.fetch.outputs.instances)[matrix.index].mail_token }}
-          EXPECT_LICENSED: ${{ env.LICENSE != '' }}
-        run: npm test
-
-      # Screenshots of failed tests only: the HTML report records the values typed into the page.
-      - name: ci/upload-screenshots
-        if: failure() && steps.fetch.outcome == 'success'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: screenshots-${{ matrix.index }}
-          path: e2e-test-stack/test-results/**/*.png
-          if-no-files-found: ignore
-
-      # The first session may have expired during the tests.
-      - name: ci/refresh-aws-credentials
-        if: always() && steps.fetch.outcome == 'success'
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
-      # The decoded tail may hold secrets, so it is read here and never uploaded.
-      - name: ci/logs
-        id: logs
-        if: always() && steps.fetch.outcome == 'success'
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
-        with:
-          operation: logs
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
-          index: ${{ matrix.index }}
-
-      - name: ci/assert-logs
-        if: always() && steps.logs.outcome == 'success'
-        env:
-          LOGS_PATH: ${{ steps.logs.outputs.logs-path }}
-          LOGS_URL: ${{ steps.logs.outputs.logs-url }}
-        run: |
-          set -euo pipefail
-          if [ -z "$LOGS_PATH" ] || [ ! -s "$LOGS_PATH" ]; then
-            echo "::error::logs returned no tail"
-            exit 1
-          fi
-          if [ -z "$LOGS_URL" ]; then
-            echo "::error::logs returned no URL for the full log"
-            exit 1
-          fi
-          echo "  $(wc -l < "$LOGS_PATH") line(s) in the tail"
-
-  destroy:
-    needs: [create, test]
-    if: always() && needs.create.outputs.batch-id != '' && !inputs.keep
-    runs-on: ubuntu-24.04
-    steps:
-      - name: ci/checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: e2e-test-stack/scripts
-
-      - name: ci/setup-node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: "26"
-          package-manager-cache: false
-
-      - name: ci/download-create-response
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
-      - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: ci/destroy
-        id: destroy
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
-        with:
-          operation: destroy
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
-
-      - name: ci/assert-destroyed
-        env:
-          STATE: ${{ steps.destroy.outputs.state }}
-        run: |
-          if [ "$STATE" != destroyed ]; then
-            echo "::error::destroy says state '${STATE}', want destroyed"
-            exit 1
-          fi
-
-      - name: ci/probe-gone
-        if: contains(needs.create.outputs.sites, 'https://')
-        env:
-          SITES: ${{ needs.create.outputs.sites }}
-        run: e2e-test-stack/scripts/probe-gone.sh
-
-      - name: ci/destroy-again
-        id: again
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d80d7af29e0b1056ae95efed3ef3b2a112e7e77f  # toolkit #21
-        with:
-          operation: destroy
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-          create-response: ${{ runner.temp }}/create/${{ env.RESPONSE_FILE }}
-
-      - name: ci/assert-not-found
-        env:
-          STATE: ${{ steps.again.outputs.state }}
-        run: |
-          if [ "$STATE" != "not found" ]; then
-            echo "::error::a second destroy says state '${STATE}', want 'not found'"
-            exit 1
-          fi
-
-      - name: ci/summary
-        if: always()
-        env:
-          STATE: ${{ steps.destroy.outputs.state }}
-          AGAIN: ${{ steps.again.outputs.state }}
-        run: |
-          {
-            echo "### Destroy"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-            echo "| Destroy | ${STATE:-not run} |"
-            echo "| Destroy again | ${AGAIN:-not run} |"
-          } >> "$GITHUB_STEP_SUMMARY"

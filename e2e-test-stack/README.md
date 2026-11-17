@@ -1,34 +1,34 @@
 # e2e-test-stack suite
 
-Playwright checks run against one remote test server from the e2e-test-stack control plane: one job per server, each
-with the credentials it fetched for its own server.
+Playwright checks run against one remote test server from the e2e-test-stack control plane, one job per server.
 
-| Workflow                                                                        | Role                                                                                                                                         |
-| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`e2e-test-stack-run.yml`](../.github/workflows/e2e-test-stack-run.yml)         | The triggers (push to `master`, dispatch) and the choices; calls the lifecycle                                                               |
-| [`e2e-test-stack-create.yml`](../.github/workflows/e2e-test-stack-create.yml)   | The lifecycle, a reusable workflow: create, the suite per server, logs, destroy. The CI role trusts its jobs, so every AWS call is made here |
-| [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml) | Destroys a batch a run kept                                                                                                                  |
+| Workflow                                                                        | Role                                                                                                                                         | AWS role |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| [`e2e-test-stack-run.yml`](../.github/workflows/e2e-test-stack-run.yml)         | The E2E workflow: push to `master` and dispatch with every create choice. Calls create, runs the suite per server in a matrix, calls destroy | No       |
+| [`e2e-test-stack-create.yml`](../.github/workflows/e2e-test-stack-create.yml)   | Reusable: create, fetch to check every server is ready, upload the sealed create response                                                    | Yes      |
+| [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml) | Reusable, and run by hand for a batch a run kept: every server's logs, destroy, the router's 404, destroy again                              | Yes      |
 
-Another repository follows the same shape: its existing E2E workflow calls its own `e2e-test-stack-create.yml`, which
-runs its tests. Masked secrets do not pass between jobs and only the trusted files may fetch them, so the tests run
-inside the called workflow.
+Each test job opens its own server's credentials from the uploaded create response with the action's `open`, which
+needs the private key but no AWS role. Masked values do not pass between jobs, and the CI role trusts only the two
+called files. Mobile and desktop follow the same shape: their existing E2E workflow calls their own two files around
+its test matrix.
 
 | File                    | What it checks                                                                                                                                                                          |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tests/api.spec.ts`     | Ping, the admin's role, the licence, membership, a post's create, edit, reaction and delete, a password reset email in Inbucket, and Inbucket refusing a request without the mail token |
 | `tests/ui.spec.ts`      | Login refusing a wrong password, login, posting and replying in a thread, and a post made through the API appearing without a reload                                                    |
-| `scripts/probe-gone.sh` | Run by the workflows after destroy: each site and its `mail-` host must get the router's 404 for a test server that no longer exists, within 3 minutes                                  |
+| `scripts/probe-gone.sh` | Run by the workflows after destroy: each site and its `mail-` host must get the router's 404 for a test server that no longer exists, each within 3 minutes                             |
 
 Each run creates its own team, channel and member, named for the run. Retries are off. No trace or video is kept, and
 CI writes no HTML report and uploads only failed tests' screenshots: the others record the passwords and tokens.
 
 ## Environment
 
-| Variable                           | From the fetch step                                                                  |
+| Variable                           | From the `open` step                                                                 |
 | ---------------------------------- | ------------------------------------------------------------------------------------ |
-| `SITE_URL`                         | `site_url`                                                                           |
-| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `admin_username`, `admin_password`                                                   |
-| `MAIL_TOKEN`                       | `mail_token`: Inbucket's HTTP Basic password, user `inbucket`, at `mail-<site host>` |
+| `SITE_URL`                         | `site-url`                                                                           |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `admin-username`, `admin-password`                                                   |
+| `MAIL_TOKEN`                       | `mail-token`: Inbucket's HTTP Basic password, user `inbucket`, at `mail-<site host>` |
 | `EXPECT_LICENSED`                  | `true` when the batch was created with a licence                                     |
 
 ## Development
