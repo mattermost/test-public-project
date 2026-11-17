@@ -83,7 +83,7 @@ jobs:
 
       - name: ci/logs
         id: logs
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: logs
           caller-key: ${{ env.CALLER_KEY }}
@@ -172,7 +172,7 @@ jobs:
 
       - name: ci/destroy
         id: destroy
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: destroy
           caller-key: ${{ env.CALLER_KEY }}
@@ -211,7 +211,7 @@ jobs:
       - name: ci/destroy-again
         id: again
         if: inputs.lifecycle
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: destroy
           caller-key: ${{ env.CALLER_KEY }}

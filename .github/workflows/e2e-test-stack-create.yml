@@ -109,7 +109,7 @@ jobs:
 
       - name: ci/create
         id: create
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: create
           caller-key: ${{ env.CALLER_KEY }}
@@ -139,7 +139,7 @@ jobs:
 
       - name: ci/fetch-batch
         id: fetch
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: fetch
           caller-key: ${{ env.CALLER_KEY }}
@@ -151,13 +151,19 @@ jobs:
       - name: ci/assert-batch
         id: indexes
         env:
+          CREATED: ${{ steps.create.outputs.state }}
           STATE: ${{ steps.fetch.outputs.state }}
           READY: ${{ steps.fetch.outputs.ready }}
           WANT: ${{ inputs.count }}
         run: |
           set -euo pipefail
-          if [ "$STATE" != ready ] || [ "$READY" != "$WANT" ]; then
-            echo "::error::fetch says state '${STATE}' with ${READY} of ${WANT} ready"
+          if [ "$CREATED" != ready ]; then
+            echo "::error::create says state '${CREATED}', want ready"
+            exit 1
+          fi
+          # fetch rebuilds the batch from its live instances and reports it as "found"; ready counts those ready.
+          if [ "$STATE" != found ] || [ "$READY" != "$WANT" ]; then
+            echo "::error::fetch says state '${STATE}' with ${READY} of ${WANT} ready, want found with ${WANT}"
             exit 1
           fi
           echo "indexes=$(jq -nc --argjson n "$WANT" '[range($n)]')" >> "$GITHUB_OUTPUT"
