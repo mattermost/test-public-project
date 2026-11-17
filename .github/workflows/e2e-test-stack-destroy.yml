@@ -1,15 +1,16 @@
 ---
 name: E2E Test Stack - Destroy
 
-# Releases a batch a lifecycle run kept (its keep input), from that run's create
-# response, then checks every site stops serving. A batch already gone (reaped at
-# its TTL, or destroyed before) is "not found", and passes.
+# Releases a batch that an "E2E Test Stack - Run" workflow run kept (its keep
+# input), from that run's create response, then checks every site stops
+# serving. A batch already gone (reaped at its TTL, or destroyed before) is
+# "not found", and passes.
 
 on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The lifecycle run that created the batch (the number in its URL)"
+        description: "The \"E2E Test Stack - Run\" workflow run that created the batch (the number in its URL)"
         required: true
         type: string
       channel:

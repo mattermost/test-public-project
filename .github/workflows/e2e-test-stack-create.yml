@@ -1,7 +1,8 @@
 ---
 name: E2E Test Stack - Lifecycle
 
-# Every operation of the e2e-test-stack action, the way a test repository uses it:
+# Every operation of the e2e-test-stack action, the way a test repository uses it.
+# Called by e2e-test-stack-run.yml:
 #
 #   create   one batch of servers, then fetch it whole by batch id and token
 #   test     one job per server: fetch its credentials from the uploaded create
@@ -9,97 +10,77 @@ name: E2E Test Stack - Lifecycle
 #   destroy  release the batch from the create response, check every site stops
 #            serving, then destroy again and expect "not found"
 #
-# The CI role trusts only this file and e2e-test-stack-destroy.yml, on master.
-# With keep, the batch is left for e2e-test-stack-destroy.yml.
+# The CI role trusts only jobs in this file and e2e-test-stack-destroy.yml, on
+# master. A called workflow's jobs run as this file, so any workflow on master
+# may call it. With keep, the batch is left for e2e-test-stack-destroy.yml.
 #
 # Re-run all jobs, not failed jobs: destroy has already released the batch the
 # failed jobs would fetch. A re-run's instance key carries its attempt number.
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - .github/workflows/e2e-test-stack-*.yml
-      - e2e-test-stack/**
-  workflow_dispatch:
+  workflow_call:
     inputs:
       channel:
-        description: "Control plane channel"
-        required: false
-        type: choice
-        options: ["v1", "edge"]
+        description: "Control plane channel: v1 or edge"
+        type: string
         default: "v1"
       server_image:
         description: "Mattermost server image on Docker Hub, by tag"
-        required: false
         type: string
         default: "mattermostdevelopment/mattermost-enterprise-edition:master"
       count:
         description: "Servers to create, one test job each"
-        required: false
         type: string
         default: "3"
       services:
         description: "Comma-separated optional services: minio or azurite, elasticsearch or opensearch, keycloak, openldap"
-        required: false
         type: string
         default: ""
       ttl:
         description: "Lifetime before the reaper takes the batch - 90m, 4h"
-        required: false
         type: string
         default: "1h"
       os:
         description: "Operating system the servers run on"
-        required: false
-        type: choice
-        options: ["ubuntu-24.04", "ubuntu-26.04"]
+        type: string
         default: "ubuntu-24.04"
       postgres:
         description: "Postgres version - '14' to '18'. Empty uses the stack's default."
-        required: false
         type: string
         default: ""
       license:
         description: "Licence SKU - 'enterprise-advanced'. Empty runs unlicensed."
-        required: false
         type: string
         default: "enterprise-advanced"
       server_env:
-        description: "Server settings as a JSON object of strings, e.g. '{\"MM_FEATUREFLAGS_TESTFEATURE\":\"true\"}'"
-        required: false
+        description: "Server settings as a JSON object of strings"
         type: string
         default: ""
       wait_for_migrations:
         description: "Wait for server migrations before reporting ready"
-        required: false
         type: boolean
         default: false
       shared_admin_password:
         description: "One admin password across the batch"
-        required: false
         type: boolean
         default: true
       keep:
         description: "Leave the batch running, for e2e-test-stack-destroy.yml"
-        required: false
         type: boolean
         default: false
+    secrets:
+      E2E_STACK_PRIVATE_KEY:
+        description: "The repository's X25519 private key, which opens the secrets sealed to it"
+        required: true
 
 permissions:
   contents: read
   id-token: write
 
-# Never cancelled: a create cancelled while it waits leaves its batch running until its TTL.
-concurrency:
-  group: e2e-test-stack-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
   CALLER_KEY: test-public-project
-  CHANNEL: ${{ inputs.channel || 'v1' }}
-  # A dispatch's empty licence runs unlicensed; a push runs licensed.
-  LICENSE: ${{ github.event_name == 'workflow_dispatch' && inputs.license || (github.event_name != 'workflow_dispatch' && 'enterprise-advanced' || '') }}
+  CHANNEL: ${{ inputs.channel }}
+  LICENSE: ${{ inputs.license }}
   RESPONSE_FILE: e2e-test-stack-create.json
 
 jobs:
@@ -131,16 +112,16 @@ jobs:
           channel: ${{ env.CHANNEL }}
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
           instance-key: tpp-${{ github.run_number }}-${{ github.run_attempt }}
-          server-image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
-          count: ${{ inputs.count || '3' }}
+          server-image: ${{ inputs.server_image }}
+          count: ${{ inputs.count }}
           services: ${{ inputs.services }}
-          ttl: ${{ inputs.ttl || '1h' }}
-          os: ${{ inputs.os || 'ubuntu-24.04' }}
+          ttl: ${{ inputs.ttl }}
+          os: ${{ inputs.os }}
           postgres: ${{ inputs.postgres }}
           license: ${{ env.LICENSE }}
           server-env: ${{ inputs.server_env }}
-          wait-for-migrations: ${{ inputs.wait_for_migrations == true }}
-          shared-admin-password: ${{ github.event_name != 'workflow_dispatch' || inputs.shared_admin_password }}
+          wait-for-migrations: ${{ inputs.wait_for_migrations }}
+          shared-admin-password: ${{ inputs.shared_admin_password }}
           response-path: ${{ runner.temp }}/${{ env.RESPONSE_FILE }}
 
       # Its secrets are sealed to this repository's key, so it is safe to upload from a public repository.
@@ -168,7 +149,7 @@ jobs:
         env:
           STATE: ${{ steps.fetch.outputs.state }}
           READY: ${{ steps.fetch.outputs.ready }}
-          WANT: ${{ inputs.count || '3' }}
+          WANT: ${{ inputs.count }}
         run: |
           set -euo pipefail
           if [ "$STATE" != ready ] || [ "$READY" != "$WANT" ]; then
@@ -308,7 +289,7 @@ jobs:
 
   destroy:
     needs: [create, test]
-    if: always() && needs.create.outputs.batch-id != '' && inputs.keep != true
+    if: always() && needs.create.outputs.batch-id != '' && !inputs.keep
     runs-on: ubuntu-24.04
     steps:
       - name: ci/checkout

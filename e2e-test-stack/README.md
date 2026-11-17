@@ -1,8 +1,17 @@
 # e2e-test-stack suite
 
-Playwright checks run against one remote test server from the e2e-test-stack control plane, by
-[`.github/workflows/e2e-test-stack-create.yml`](../.github/workflows/e2e-test-stack-create.yml): one job per server,
-each with the credentials it fetched for its own server.
+Playwright checks run against one remote test server from the e2e-test-stack control plane: one job per server, each
+with the credentials it fetched for its own server.
+
+| Workflow                                                                        | Role                                                                                                                                         |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`e2e-test-stack-run.yml`](../.github/workflows/e2e-test-stack-run.yml)         | The triggers (push to `master`, dispatch) and the choices; calls the lifecycle                                                               |
+| [`e2e-test-stack-create.yml`](../.github/workflows/e2e-test-stack-create.yml)   | The lifecycle, a reusable workflow: create, the suite per server, logs, destroy. The CI role trusts its jobs, so every AWS call is made here |
+| [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml) | Destroys a batch a run kept                                                                                                                  |
+
+Another repository follows the same shape: its existing E2E workflow calls its own `e2e-test-stack-create.yml`, which
+runs its tests. Masked secrets do not pass between jobs and only the trusted files may fetch them, so the tests run
+inside the called workflow.
 
 | File                    | What it checks                                                                                                                                                                          |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -55,11 +55,3 @@ jobs:
       - name: ci/yamllint
         working-directory: .
         run: yamllint .github/workflows/e2e-test-stack-*.yml
-
-      - name: ci/list
-        env:
-          SITE_URL: https://stack.example
-          ADMIN_USERNAME: unused
-          ADMIN_PASSWORD: unused
-          MAIL_TOKEN: unused
-        run: npx playwright test --list

@@ -1,0 +1,111 @@
+---
+name: E2E Test Stack - Run
+
+# Starts the lifecycle in e2e-test-stack-create.yml, which this repository's CI
+# role trusts, the way an existing E2E workflow calls it: this file holds the
+# triggers and the choices; the called file creates the servers, runs the
+# suite against each and destroys them.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/e2e-test-stack-*.yml
+      - e2e-test-stack/**
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Control plane channel"
+        required: false
+        type: choice
+        options: ["v1", "edge"]
+        default: "v1"
+      server_image:
+        description: "Mattermost server image on Docker Hub, by tag"
+        required: false
+        type: string
+        default: "mattermostdevelopment/mattermost-enterprise-edition:master"
+      count:
+        description: "Servers to create, one test job each"
+        required: false
+        type: string
+        default: "3"
+      services:
+        description: "Comma-separated optional services: minio or azurite, elasticsearch or opensearch, keycloak, openldap"
+        required: false
+        type: string
+        default: ""
+      ttl:
+        description: "Lifetime before the reaper takes the batch - 90m, 4h"
+        required: false
+        type: string
+        default: "1h"
+      os:
+        description: "Operating system the servers run on"
+        required: false
+        type: choice
+        options: ["ubuntu-24.04", "ubuntu-26.04"]
+        default: "ubuntu-24.04"
+      postgres:
+        description: "Postgres version - '14' to '18'. Empty uses the stack's default."
+        required: false
+        type: string
+        default: ""
+      license:
+        description: "Licence SKU - 'enterprise-advanced'. Empty runs unlicensed."
+        required: false
+        type: string
+        default: "enterprise-advanced"
+      server_env:
+        description: "Server settings as a JSON object of strings, e.g. '{\"MM_FEATUREFLAGS_TESTFEATURE\":\"true\"}'"
+        required: false
+        type: string
+        default: ""
+      wait_for_migrations:
+        description: "Wait for server migrations before reporting ready"
+        required: false
+        type: boolean
+        default: false
+      shared_admin_password:
+        description: "One admin password across the batch"
+        required: false
+        type: boolean
+        default: true
+      keep:
+        description: "Leave the batch running, for e2e-test-stack-destroy.yml"
+        required: false
+        type: boolean
+        default: false
+
+# Never cancelled: a create cancelled while it waits leaves its batch running until its TTL.
+concurrency:
+  group: e2e-test-stack-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    # A called workflow gets no more than the caller grants.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-test-stack-create.yml
+    # A push has no inputs, so each choice falls back to the dispatch default.
+    with:
+      channel: ${{ inputs.channel || 'v1' }}
+      server_image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
+      count: ${{ inputs.count || '3' }}
+      services: ${{ inputs.services }}
+      ttl: ${{ inputs.ttl || '1h' }}
+      os: ${{ inputs.os || 'ubuntu-24.04' }}
+      postgres: ${{ inputs.postgres }}
+      # A dispatch's empty licence runs unlicensed; a push runs licensed.
+      license: ${{ github.event_name == 'workflow_dispatch' && inputs.license || (github.event_name != 'workflow_dispatch' && 'enterprise-advanced' || '') }}
+      server_env: ${{ inputs.server_env }}
+      wait_for_migrations: ${{ inputs.wait_for_migrations == true }}
+      shared_admin_password: ${{ github.event_name != 'workflow_dispatch' || inputs.shared_admin_password }}
+      keep: ${{ inputs.keep == true }}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
