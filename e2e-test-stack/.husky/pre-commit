@@ -1,0 +1,6 @@
+# Formatting, lint and types for the e2e-test-stack suite, and YAML lint for its workflows.
+yamllint .github/workflows/e2e-test-stack-*.yml
+cd e2e-test-stack
+npm run fmt:check
+npm run lint
+npm run tsc

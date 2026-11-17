@@ -1,199 +1,247 @@
 ---
-name: E2E Test Stack - Destroy and Validate
+name: E2E Test Stack - Destroy
 
-# Releases a batch, then checks every site it had stops serving.
+# Releases a batch from its create response. An E2E Test Stack - Run calls it
+# after its tests (lifecycle: true): it collects each server's logs, destroys
+# the batch, checks every site and mail host gets the router's 404 for a server
+# that no longer exists, and destroys again expecting "not found". Run by hand
+# with the run id of a run that kept its batch, it destroys and checks; a batch
+# already gone (reaped at its TTL, or destroyed before) is "not found", and passes.
 #
-# Takes the batch id and the create run's github.run_id (printed in that run's
-# summary). The destroy response lists the batch's sites, so the check covers all
-# of them.
+# The CI role trusts only jobs in this file and e2e-test-stack-create.yml, on master.
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      batch_id:
-        description: "Batch to destroy, from the create run's summary"
-        required: true
+      channel:
+        description: "Control plane channel the batch was created on: v1 or edge"
         type: string
-      caller_run_id:
-        description: "github.run_id of the create workflow (printed in that run's summary)"
-        required: true
-        type: string
-      caller_repository:
-        description: "Repository that created the batch. Leave empty for this repository."
-        required: false
+        default: "v1"
+      indexes:
+        description: "JSON array of the servers whose logs to collect, from create; empty collects none"
         type: string
         default: ""
-      lambda_alias:
-        description: "Control plane to invoke. Match whatever created the batch."
+      lifecycle:
+        description: "Called after a run's tests: collect the servers' logs, and require the batch to be destroyed"
+        type: boolean
+        default: false
+    secrets:
+      E2E_STACK_PRIVATE_KEY:
+        description: "The repository's X25519 private key, which opens the secrets sealed to it"
+        required: true
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "The \"E2E Test Stack - Run\" workflow run that created the batch (the number in its URL)"
+        required: true
+        type: string
+      channel:
+        description: "Control plane channel the batch was created on"
         required: false
         type: choice
         options: ["v1", "edge"]
         default: "v1"
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
+env:
+  CALLER_KEY: test-public-project
+  # By hand: the run whose create response to read. Empty when called.
+  RUN_ID: ${{ inputs.run_id }}
+
 jobs:
-  destroy:
+  # The decoded tails may hold secrets, so each is checked here and never uploaded.
+  logs:
+    if: inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        index: ${{ fromJSON(inputs.indexes) }}
+    name: logs (server ${{ matrix.index }})
     steps:
-      # Once. Every step below inherits these credentials.
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: ci/download-create-response
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
       - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3 (2026-07-22)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
           role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
           aws-region: us-east-1
-          role-duration-seconds: 1200
 
       - name: ci/logs
         id: logs
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-logs@b016374e8dca6b8b7ca14d2787f8fc21e72ca0e2 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
         with:
-          batch_id: ${{ inputs.batch_id }}
-          caller_run_id: ${{ inputs.caller_run_id }}
-          caller_repository: ${{ inputs.caller_repository }}
-          lambda_alias: ${{ inputs.lambda_alias }}
+          operation: logs
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ inputs.channel }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+          index: ${{ matrix.index }}
 
       - name: ci/assert-logs
-        id: assert-logs
         env:
-          LOG_PATH: ${{ steps.logs.outputs.path }}
-          CONTAINERS: ${{ steps.logs.outputs.containers }}
+          LOGS_PATH: ${{ steps.logs.outputs.logs-path }}
+          LOGS_URL: ${{ steps.logs.outputs.logs-url }}
         run: |
           set -euo pipefail
-
-          lines=$(wc -l < "$LOG_PATH")
-          if [ "$lines" -eq 0 ]; then
-            echo "::error::log file is empty"
+          if [ -z "$LOGS_PATH" ] || [ ! -s "$LOGS_PATH" ]; then
+            echo "::error::logs returned no tail"
             exit 1
           fi
-          echo "  ${lines} line(s)"
-
-          count=$(jq 'length' <<< "$CONTAINERS")
-          if [ "$count" -eq 0 ]; then
-            echo "::error::no containers in the log"
+          if [ -z "$LOGS_URL" ]; then
+            echo "::error::logs returned no URL for the full log"
             exit 1
           fi
-          jq -r '.[] | "  holds " + .' <<< "$CONTAINERS"
+          echo "  $(wc -l < "$LOGS_PATH") line(s) in the tail"
 
-      - name: ci/upload-logs
-        id: upload-logs
-        if: always() && steps.logs.outputs.path != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+  # Depends on nothing but the create response, so a failed logs job never keeps the batch alive.
+  destroy:
+    needs: logs
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      # By hand, the run named must be a run of the E2E workflow on master in this
+      # repository, so a pull request's artifact of the same name is never read.
+      - name: ci/check-run
+        if: inputs.run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::run_id must be a run number, got '${RUN_ID}'"
+            exit 1
+          fi
+          read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
+          if [ "$path" != .github/workflows/e2e-test-stack-run.yml ] || [ "$branch" != master ] ||
+            [ "$repo" != "$GITHUB_REPOSITORY" ] || { [ "$event" != push ] && [ "$event" != workflow_dispatch ]; }; then
+            echo "::error::run ${RUN_ID} is not an E2E Test Stack - Run on master: ${path} on ${branch} (${event}) from ${repo}"
+            exit 1
+          fi
+
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          name: e2e-logs-${{ inputs.batch_id }}
-          path: |
-            ${{ steps.logs.outputs.path }}
-            ${{ steps.logs.outputs.full_path }}
-          if-no-files-found: warn
+          persist-credentials: false
+          sparse-checkout: e2e-test-stack/scripts
+
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      # Called: this run attempt's own artifact. A token would make the action look it up by run id, which can find
+      # an earlier attempt's.
+      - name: ci/download-create-response
+        if: inputs.run_id == ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
+      - name: ci/download-create-response-of-run
+        if: inputs.run_id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/create
+
+      - name: ci/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
 
       - name: ci/destroy
         id: destroy
-        if: always()
-        uses: mattermost/mattermost-test-automation-toolkit/.github/actions/e2e-test-stack-destroy@b016374e8dca6b8b7ca14d2787f8fc21e72ca0e2 # e2e-test-stack-actions
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
         with:
-          batch_id: ${{ inputs.batch_id }}
-          caller_run_id: ${{ inputs.caller_run_id }}
-          caller_repository: ${{ inputs.caller_repository }}
-          lambda_alias: ${{ inputs.lambda_alias }}
+          operation: destroy
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ inputs.channel }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
+      - name: ci/assert-destroyed
+        env:
+          STATE: ${{ steps.destroy.outputs.state }}
+          LIFECYCLE: ${{ inputs.lifecycle }}
+        run: |
+          case "$STATE" in
+            destroyed) ;;
+            "not found")
+              if [ "$LIFECYCLE" = true ]; then
+                echo "::error::destroy says 'not found' for the batch this run created"
+                exit 1
+              fi
+              echo "already gone"
+              ;;
+            *)
+              echo "::error::destroy says state '${STATE}', want destroyed"
+              exit 1
+              ;;
+          esac
+
+      # A batch whose every instance failed has no site to check.
       - name: ci/probe-gone
         id: probe-gone
-        if: always() && steps.destroy.outputs.sites != ''
+        if: steps.destroy.outputs.state == 'destroyed' && contains(steps.destroy.outputs.sites, '://')
         env:
           SITES: ${{ steps.destroy.outputs.sites }}
+        run: e2e-test-stack/scripts/probe-gone.sh
+
+      - name: ci/destroy-again
+        id: again
+        if: inputs.lifecycle
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@d686d29da936c6c05cd7f3430994a0cee6dd9a14  # toolkit #21
+        with:
+          operation: destroy
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ inputs.channel }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+
+      - name: ci/assert-not-found
+        if: inputs.lifecycle
+        env:
+          STATE: ${{ steps.again.outputs.state }}
         run: |
-          set -euo pipefail
-
-          # An instance that never launched has no site, and leaves a hole so
-          # that index still maps to instance.
-          targets=$(jq -r '.[] | select(. != "")' <<< "$SITES")
-          if [ -z "$targets" ]; then
-            echo "no sites to check"
-            exit 0
+          if [ "$STATE" != "not found" ]; then
+            echo "::error::a second destroy says state '${STATE}', want 'not found'"
+            exit 1
           fi
-
-          # Retried: destroy returns while the stacks are still terminating, and
-          # requests stop reaching one a few seconds after that.
-          #
-          # A refused or timed-out request does not count. That is what any
-          # network fault looks like, so the check needs an answer saying the
-          # hostname is not served.
-          failed=0
-          for site in $targets; do
-            gone=0
-            for attempt in $(seq 1 20); do
-              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "${site}/api/v4/system/ping" || echo "000")
-              case "$code" in
-                404 | 502 | 503)
-                  echo "  gone           ${site} (${code} after ${attempt} attempt(s))"
-                  gone=1
-                  break
-                  ;;
-              esac
-              sleep 5
-            done
-            if [ "$gone" -ne 1 ]; then
-              echo "::error::${site} is still serving after being destroyed"
-              failed=1
-            fi
-          done
-          exit $failed
 
       - name: ci/summary
         if: always()
         env:
-          BATCH_ID: ${{ inputs.batch_id }}
-          LOGS: ${{ steps.logs.outcome }}
-          ASSERT_LOGS: ${{ steps.assert-logs.outcome }}
-          UPLOAD_LOGS: ${{ steps.upload-logs.outcome }}
-          DESTROY: ${{ steps.destroy.outcome }}
           STATE: ${{ steps.destroy.outputs.state }}
-          CHECKED: ${{ steps.destroy.outputs.sites }}
           GONE: ${{ steps.probe-gone.outcome }}
+          AGAIN: ${{ steps.again.outputs.state }}
         run: |
-          set -euo pipefail
-
-          status() {
-            case "$1" in
-              success) echo "pass" ;;
-              failure) echo "**FAIL**" ;;
-              '') echo "not run" ;;
-              *) echo "$1" ;;
-            esac
-          }
-
-          # A check that never ran is not a pass, so it is called out separately
-          # from one that did and failed.
-          overall=pass
-          for outcome in "$LOGS" "$ASSERT_LOGS" "$UPLOAD_LOGS" "$DESTROY" "$GONE"; do
-            if [ "$outcome" = failure ]; then
-              overall="**FAIL**"
-              break
-            fi
-            if [ "$outcome" != success ] && [ "$overall" = pass ]; then
-              overall=incomplete
-            fi
-          done
-
           {
-            echo "### Validation — ${overall}"
+            echo "### Destroy"
             echo
             echo "| Check | Result |"
             echo "|---|---|"
-            echo "| Batch | \`${BATCH_ID}\` |"
-            echo "| Logs collected | $(status "$LOGS") |"
-            echo "| Log assertions | $(status "$ASSERT_LOGS") |"
-            echo "| Logs uploaded | $(status "$UPLOAD_LOGS") |"
-            echo "| Released | $(status "$DESTROY")${STATE:+ (${STATE})} |"
-            echo "| Sites checked | $(jq -r 'map(select(. != "")) | length' <<< "${CHECKED:-[]}") |"
-            echo "| No longer serving | $(status "$GONE") |"
+            echo "| Destroy | ${STATE:-not run} |"
+            echo "| Sites and mail hosts gone | ${GONE:-not run} |"
+            echo "| Destroy again | ${AGAIN:-not run} |"
           } >> "$GITHUB_STEP_SUMMARY"
-
-          # The summary is the verdict, so the job carries it. A check that did
-          # not run leaves the run unproven, which is not a pass either.
-          if [ "$overall" != pass ]; then
-            echo "::error::validation ${overall//\*/}"
-            exit 1
-          fi

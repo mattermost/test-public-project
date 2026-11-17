@@ -1,0 +1,10 @@
+extends: default
+
+rules:
+  key-duplicates: enable
+  empty-lines: disable
+  line-length: disable
+  trailing-spaces: disable
+  # GitHub Actions' `on:` key is not a boolean.
+  truthy:
+    check-keys: false
