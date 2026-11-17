@@ -53,7 +53,7 @@ env:
   RUN_ID: ${{ inputs.run_id }}
 
 jobs:
-  # The decoded tails may hold secrets, so each is checked here and never uploaded.
+  # The decoded tails may hold secrets: each is checked here, and only the sealed response is uploaded.
   logs:
     if: inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]'
     runs-on: ubuntu-24.04
@@ -91,6 +91,19 @@ jobs:
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ matrix.index }}
+          response-path: ${{ runner.temp }}/e2e-test-stack-logs.json
+
+      # The response, with the tail still sealed to this repository's key, so it is safe to upload from a public
+      # repository. Open it with e2e-test-stack/scripts/open-logs.mjs and the private key.
+      - name: ci/upload-sealed-logs
+        if: always() && steps.logs.outputs.response-path != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: e2e-test-stack-logs-${{ matrix.index }}
+          path: ${{ steps.logs.outputs.response-path }}
+          if-no-files-found: error
+          # Sealed boxes are not forward-secret, so the copies do not outlive their use.
+          retention-days: 14
 
       - name: ci/assert-logs
         env:

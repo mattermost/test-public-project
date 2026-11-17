@@ -31,6 +31,20 @@ CI writes no HTML report and uploads only failed tests' screenshots: the others 
 | `MAIL_TOKEN`                       | `mail-token`: Inbucket's HTTP Basic password, user `inbucket`, at `mail-<site host>` |
 | `EXPECT_LICENSED`                  | `true` when the batch was created with a licence                                     |
 
+## Server logs
+
+Each run uploads every server's log tail as `e2e-test-stack-logs-<index>`: the logs response, with the tail still sealed
+to this repository's key, so it is safe in this public repository. To read one, download it and open it with the private
+key:
+
+```sh
+gh run download <run id> -R mattermost/test-public-project -n e2e-test-stack-logs-0 -D logs
+E2E_STACK_PRIVATE_KEY=<key> node scripts/open-logs.mjs logs/e2e-test-stack-logs.json > server-0.log
+```
+
+The tail may hold secrets: keep the opened file local. The full log's URL, printed alongside, expires 30 minutes after
+the logs call.
+
 ## Development
 
 Node 26. `npm install` also installs a pre-commit hook that runs `fmt:check` (Prettier), `lint` (ESLint), `tsc` and
