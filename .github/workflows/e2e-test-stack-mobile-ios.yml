@@ -1,0 +1,83 @@
+---
+name: E2E Test Stack - Mobile iOS
+
+# By hand only: runs mattermost-mobile's iOS Detox suite on e2e-test-stack
+# servers, one batch per shard, to prove the switch before a mobile PR. This
+# first step builds the unsigned simulator app from a mobile ref.
+#
+# The mobile repository is checked out at the workspace root, so its
+# composite actions (./.github/actions/*) resolve as they do in mobile.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mobile_ref:
+        description: "mattermost/mattermost-mobile branch, tag or SHA"
+        required: false
+        type: string
+        default: "main"
+
+permissions:
+  contents: read
+
+env:
+  MOBILE_REPOSITORY: mattermost/mattermost-mobile
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: ci/resolve-mobile-sha
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MOBILE_REF: ${{ inputs.mobile_ref }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/${MOBILE_REPOSITORY}/commits/${MOBILE_REF}" --jq .sha)
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::${MOBILE_REF} is not a ref of ${MOBILE_REPOSITORY}"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "### Mobile ref" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${MOBILE_REF}\` at [\`${sha:0:12}\`](https://github.com/${MOBILE_REPOSITORY}/commit/${sha})" >> "$GITHUB_STEP_SUMMARY"
+
+  build-ios-simulator:
+    needs: resolve
+    # As in mobile: the simulator build runs on macos-26.
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: ci/prepare-ios-build
+        uses: ./.github/actions/prepare-ios-build
+        with:
+          intune-enabled: "false"
+
+      - name: ci/set-env
+        run: echo "RUNNING_E2E=true" > .env
+
+      # Unsigned: the simulator lane builds with code signing off.
+      - name: ci/build-ios-simulator
+        env:
+          TAG: ${{ needs.resolve.outputs.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ./fastlane
+        run: bundle exec fastlane ios simulator --env ios.simulator
+
+      - name: ci/upload-ios-simulator
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: ios-build-simulator-${{ github.run_id }}
+          path: Mattermost-simulator-*.app.zip
+          if-no-files-found: error
+          retention-days: 14
