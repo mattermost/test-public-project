@@ -40,6 +40,9 @@ CI writes no HTML report and uploads only failed tests' screenshots: the others 
 Each run uploads every server's full log as `e2e-test-stack-logs-<index>`, kept 14 days: the Mattermost server and
 each service, every one headed `===== <container> =====`.
 
+A destroy run by hand for a batch a run kept uploads the logs of its servers that are still up; a batch already gone
+has none.
+
 ```sh
 gh run download <run id> -R mattermost/test-public-project -n e2e-test-stack-logs-0 -D logs
 ```
