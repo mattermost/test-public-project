@@ -31,6 +31,15 @@ CI writes no HTML report and uploads only failed tests' screenshots: the others 
 | `MAIL_TOKEN`                       | `mail-token`: Inbucket's HTTP Basic password, user `inbucket`, at `mail-<site host>` |
 | `EXPECT_LICENSED`                  | `true` when the batch was created with a licence                                     |
 
+## Server logs
+
+Each run uploads every server's full log as `e2e-test-stack-logs-<index>`, kept 14 days: the Mattermost server and
+each service, every one headed `===== <container> =====`.
+
+```sh
+gh run download <run id> -R mattermost/test-public-project -n e2e-test-stack-logs-0 -D logs
+```
+
 ## Development
 
 Node 26. `npm install` also installs a pre-commit hook that runs `fmt:check` (Prettier), `lint` (ESLint), `tsc` and

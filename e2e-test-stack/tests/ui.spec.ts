@@ -1,7 +1,19 @@
-import { call, login } from './support/api';
+import type { Page } from '@playwright/test';
+
+import { call } from './support/api';
 import { expect, test, type Post, type World } from './support/fixtures';
 
 const channelPath = (world: World) => `/${world.team.name}/channels/${world.channel.name}`;
+
+// Logs in through the login page, as a person does: the web app keeps the session it is given there.
+async function logIn(page: Page, world: World): Promise<void> {
+  await page.goto('/login');
+  await page.locator('#input_loginId').fill(world.user.username);
+  await page.locator('#input_password-input').fill(world.user.password);
+  await page.locator('#saveSetting').click();
+  // Signed in: the web app moves its only team member into that team.
+  await expect(page).toHaveURL(new RegExp(`/${world.team.name}/channels/`));
+}
 
 async function findPost(request: Parameters<typeof call>[0], world: World, message: string): Promise<Post> {
   let found: Post | undefined;
@@ -30,17 +42,13 @@ test('the login page refuses a wrong password', async ({ page, world }) => {
 });
 
 test('the member logs in and opens the channel', async ({ page, world }) => {
-  await page.goto('/login');
-  await page.locator('#input_loginId').fill(world.user.username);
-  await page.locator('#input_password-input').fill(world.user.password);
-  await page.locator('#saveSetting').click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await logIn(page, world);
   await page.goto(channelPath(world));
   await expect(page.locator('#post_textbox')).toBeVisible();
 });
 
 test('the member posts in the channel and replies in its thread', async ({ page, world }) => {
-  await login(page.request, world.user.username, world.user.password);
+  await logIn(page, world);
   await page.goto(channelPath(world));
 
   const message = `UI post ${Date.now()}`;
@@ -69,7 +77,7 @@ test('the member posts in the channel and replies in its thread', async ({ page,
 });
 
 test('a post made through the API appears without a reload', async ({ page, request, world }) => {
-  await login(page.request, world.user.username, world.user.password);
+  await logIn(page, world);
   await page.goto(channelPath(world));
   await expect(page.locator('#post_textbox')).toBeVisible();
 
