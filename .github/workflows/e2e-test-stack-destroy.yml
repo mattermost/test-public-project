@@ -53,8 +53,7 @@ env:
   RUN_ID: ${{ inputs.run_id }}
 
 jobs:
-  # Each server's full log, with the batch's credentials, ARNs and account ids taken out by the action, is uploaded as
-  # plain text.
+  # Uploads each server's full log.
   logs:
     if: inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]'
     runs-on: ubuntu-24.04

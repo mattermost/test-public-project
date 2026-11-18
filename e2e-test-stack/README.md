@@ -33,10 +33,8 @@ CI writes no HTML report and uploads only failed tests' screenshots: the others 
 
 ## Server logs
 
-Each run uploads every server's full log as `e2e-test-stack-logs-<index>`, plain text, kept 14 days: the Mattermost
-server and each service, every one headed `===== <container> =====`. The action takes out the batch's credentials
-(admin passwords, mail tokens, service credentials, the batch token), ARNs and AWS account ids before the upload;
-anything else the containers print is in it.
+Each run uploads every server's full log as `e2e-test-stack-logs-<index>`, kept 14 days: the Mattermost server and
+each service, every one headed `===== <container> =====`.
 
 ```sh
 gh run download <run id> -R mattermost/test-public-project -n e2e-test-stack-logs-0 -D logs
