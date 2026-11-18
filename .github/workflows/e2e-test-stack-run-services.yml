@@ -1,0 +1,59 @@
+---
+name: E2E Test Stack - Run with services
+
+# The E2E workflow with every optional service: MinIO as the file store,
+# Elasticsearch as the search backend, Keycloak and OpenLDAP. Calls
+# e2e-test-stack-run.yml, which creates the batch, runs the suite per server
+# and destroys the batch; tests/services.spec.ts checks each service.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/e2e-test-stack-*.yml
+      - e2e-test-stack/**
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Control plane channel"
+        required: false
+        type: choice
+        options: ["v1", "edge"]
+        default: "v1"
+      server_image:
+        description: "Mattermost server image on Docker Hub, by tag"
+        required: false
+        type: string
+        default: "mattermostdevelopment/mattermost-enterprise-edition:master"
+      count:
+        description: "Servers to create, one test job each"
+        required: false
+        type: string
+        default: "3"
+      keep:
+        description: "Leave the batch running, for e2e-test-stack-destroy.yml"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    # What the called workflow's create and destroy need; a called workflow gets no more.
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-test-stack-run.yml
+    with:
+      channel: ${{ inputs.channel || 'v1' }}
+      server_image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
+      count: ${{ inputs.count || '3' }}
+      services: minio,elasticsearch,keycloak,openldap
+      # Elasticsearch and LDAP are licensed features.
+      license: enterprise-advanced
+      keep: ${{ inputs.keep == true }}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}

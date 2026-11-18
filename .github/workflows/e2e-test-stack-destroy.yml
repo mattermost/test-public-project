@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The \"E2E Test Stack - Run\" workflow run that created the batch (the number in its URL)"
+        description: "The E2E Test Stack - Run, or Run with services, workflow run that created the batch (the number in its URL)"
         required: true
         type: string
       channel:
@@ -130,7 +130,7 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     steps:
-      # By hand, the run named must be a run of the E2E workflow on master in this
+      # By hand, the run named must be a run of an E2E workflow on master in this
       # repository, so a pull request's artifact of the same name is never read.
       - name: ci/check-run
         if: inputs.run_id != ''
@@ -144,9 +144,13 @@ jobs:
           fi
           read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
             --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
-          if [ "$path" != .github/workflows/e2e-test-stack-run.yml ] || [ "$branch" != master ] ||
+          case "$path" in
+            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml) ;;
+            *) path="not an E2E workflow: ${path}" ;;
+          esac
+          if [[ "$path" == not* ]] || [ "$branch" != master ] ||
             [ "$repo" != "$GITHUB_REPOSITORY" ] || { [ "$event" != push ] && [ "$event" != workflow_dispatch ]; }; then
-            echo "::error::run ${RUN_ID} is not an E2E Test Stack - Run on master: ${path} on ${branch} (${event}) from ${repo}"
+            echo "::error::run ${RUN_ID} is not an E2E Test Stack run on master: ${path} on ${branch} (${event}) from ${repo}"
             exit 1
           fi
 
