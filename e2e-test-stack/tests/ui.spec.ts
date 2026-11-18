@@ -11,7 +11,8 @@ async function logIn(page: Page, world: World): Promise<void> {
   await page.locator('#input_loginId').fill(world.user.username);
   await page.locator('#input_password-input').fill(world.user.password);
   await page.locator('#saveSetting').click();
-  await expect(page).not.toHaveURL(/\/login/);
+  // Signed in: the web app moves its only team member into that team.
+  await expect(page).toHaveURL(new RegExp(`/${world.team.name}/channels/`));
 }
 
 async function findPost(request: Parameters<typeof call>[0], world: World, message: string): Promise<Post> {
