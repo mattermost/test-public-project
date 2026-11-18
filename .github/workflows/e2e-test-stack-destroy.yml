@@ -226,7 +226,12 @@ jobs:
         if: steps.destroy.outputs.state == 'destroyed' && contains(steps.destroy.outputs.sites, '://')
         env:
           SITES: ${{ steps.destroy.outputs.sites }}
-        run: e2e-test-stack/scripts/probe-gone.sh
+        run: |
+          set -euo pipefail
+          # Keycloak's sso- host, for each server created with it.
+          SSO_HOSTS=$(jq -c '[.batch.instances[]? | .sso_host? // empty]' "${RUNNER_TEMP}/create/e2e-test-stack-create.json")
+          export SSO_HOSTS
+          e2e-test-stack/scripts/probe-gone.sh
 
       - name: ci/destroy-again
         id: again
@@ -262,6 +267,6 @@ jobs:
             echo "| Check | Result |"
             echo "|---|---|"
             echo "| Destroy | ${STATE:-not run} |"
-            echo "| Sites and mail hosts gone | ${GONE:-not run} |"
+            echo "| Sites, mail and SSO hosts gone | ${GONE:-not run} |"
             echo "| Destroy again | ${AGAIN:-not run} |"
           } >> "$GITHUB_STEP_SUMMARY"
