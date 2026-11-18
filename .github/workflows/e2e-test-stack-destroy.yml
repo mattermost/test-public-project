@@ -53,7 +53,8 @@ env:
   RUN_ID: ${{ inputs.run_id }}
 
 jobs:
-  # The decoded tails may hold secrets: each is checked here, and only the sealed response is uploaded.
+  # Each server's full log, with the batch's credentials, ARNs and account ids taken out by the action, is uploaded as
+  # plain text.
   logs:
     if: inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]'
     runs-on: ubuntu-24.04
@@ -91,35 +92,38 @@ jobs:
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ matrix.index }}
-          response-path: ${{ runner.temp }}/e2e-test-stack-logs.json
+          logs-path: ${{ runner.temp }}/e2e-test-stack-server-${{ matrix.index }}.log
 
-      # The response, with the tail still sealed to this repository's key, so it is safe to upload from a public
-      # repository. Open it with e2e-test-stack/scripts/open-logs.mjs and the private key.
-      - name: ci/upload-sealed-logs
-        if: always() && steps.logs.outputs.response-path != ''
+      # The full log, or the tail when the download failed (the logs step then fails too).
+      - name: ci/upload-logs
+        if: always() && steps.logs.outputs.logs-path != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-test-stack-logs-${{ matrix.index }}
-          path: ${{ steps.logs.outputs.response-path }}
+          path: ${{ steps.logs.outputs.logs-path }}
           if-no-files-found: error
-          # Sealed boxes are not forward-secret, so the copies do not outlive their use.
           retention-days: 14
 
       - name: ci/assert-logs
         env:
           LOGS_PATH: ${{ steps.logs.outputs.logs-path }}
-          LOGS_URL: ${{ steps.logs.outputs.logs-url }}
+          LOGS_FULL: ${{ steps.logs.outputs.logs-full }}
         run: |
           set -euo pipefail
           if [ -z "$LOGS_PATH" ] || [ ! -s "$LOGS_PATH" ]; then
-            echo "::error::logs returned no tail"
+            echo "::error::logs wrote no log"
             exit 1
           fi
-          if [ -z "$LOGS_URL" ]; then
-            echo "::error::logs returned no URL for the full log"
+          if [ "$LOGS_FULL" != "true" ]; then
+            echo "::error::logs wrote only a truncated tail, not the full log"
             exit 1
           fi
-          echo "  $(wc -l < "$LOGS_PATH") line(s) in the tail"
+          # The agent heads each container's output with "===== <container> =====".
+          if ! grep -q '^===== .* =====$' "$LOGS_PATH"; then
+            echo "::error::the log names no container"
+            exit 1
+          fi
+          echo "  $(wc -l < "$LOGS_PATH") line(s): $(grep '^===== .* =====$' "$LOGS_PATH" | tr -d '=' | xargs)"
 
   # Depends on nothing but the create response, so a failed logs job never keeps the batch alive.
   destroy:
