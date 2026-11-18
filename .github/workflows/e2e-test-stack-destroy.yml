@@ -5,8 +5,9 @@ name: E2E Test Stack - Destroy
 # after its tests (lifecycle: true): it collects each server's logs, destroys
 # the batch, checks every site and mail host gets the router's 404 for a server
 # that no longer exists, and destroys again expecting "not found". Run by hand
-# with the run id of a run that kept its batch, it destroys and checks; a batch
-# already gone (reaped at its TTL, or destroyed before) is "not found", and passes.
+# with the run id of a run that kept its batch, it collects the logs of the
+# servers still up, destroys and checks; a batch already gone (reaped at its TTL,
+# or destroyed before) has no logs, is "not found", and passes.
 #
 # The CI role trusts only jobs in this file and e2e-test-stack-create.yml, on master.
 
@@ -53,14 +54,97 @@ env:
   RUN_ID: ${{ inputs.run_id }}
 
 jobs:
+  # By hand only: checks the run named, and finds which of its servers are still up, for logs.
+  run:
+    if: inputs.run_id != ''
+    runs-on: ubuntu-24.04
+    outputs:
+      indexes: ${{ steps.indexes.outputs.indexes }}
+    steps:
+      # By hand, the run named must be a run of an E2E workflow on master in this
+      # repository, so a pull request's artifact of the same name is never read.
+      - name: ci/check-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::run_id must be a run number, got '${RUN_ID}'"
+            exit 1
+          fi
+          read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
+          case "$path" in
+            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml) ;;
+            *) path="not an E2E workflow: ${path}" ;;
+          esac
+          if [[ "$path" == not* ]] || [ "$branch" != master ] ||
+            [ "$repo" != "$GITHUB_REPOSITORY" ] || { [ "$event" != push ] && [ "$event" != workflow_dispatch ]; }; then
+            echo "::error::run ${RUN_ID} is not an E2E Test Stack run on master: ${path} on ${branch} (${event}) from ${repo}"
+            exit 1
+          fi
+
+      - name: ci/setup-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: ci/download-create-response-of-run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/create
+
+      - name: ci/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # A batch reaped at its TTL, or destroyed before, has no servers to read logs from.
+      - name: ci/fetch
+        id: fetch
+        continue-on-error: true
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        with:
+          operation: fetch
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ inputs.channel }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+
+      - name: ci/indexes
+        id: indexes
+        env:
+          OUTCOME: ${{ steps.fetch.outcome }}
+          INSTANCES: ${{ steps.fetch.outputs.instances }}
+        run: |
+          set -euo pipefail
+          indexes='[]'
+          if [ "$OUTCOME" = success ] && [ -n "$INSTANCES" ]; then
+            indexes=$(jq -c '[to_entries[] | select(.value != null and .value.state == "ready") | .key]' <<< "$INSTANCES")
+          fi
+          if [ "$indexes" = '[]' ]; then
+            echo "::notice::no server of run ${RUN_ID} is up, so no logs are collected"
+          fi
+          echo "indexes=${indexes}" >> "$GITHUB_OUTPUT"
+
   # Uploads each server's full log.
   logs:
-    if: inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]'
+    needs: run
+    # Called after a run's tests, or by hand for the servers still up.
+    if: >-
+      always() &&
+      ((inputs.run_id == '' && inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]') ||
+      (inputs.run_id != '' && needs.run.result == 'success' && needs.run.outputs.indexes != '[]'))
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        index: ${{ fromJSON(inputs.indexes) }}
+        index: ${{ fromJSON(inputs.run_id != '' && needs.run.outputs.indexes || inputs.indexes) }}
     name: logs (server ${{ matrix.index }})
     steps:
       - name: ci/setup-node
@@ -69,10 +153,22 @@ jobs:
           node-version: "26"
           package-manager-cache: false
 
+      # Called: this run attempt's own artifact. A token would make the action look it up by run id, which can find
+      # an earlier attempt's.
       - name: ci/download-create-response
+        if: inputs.run_id == ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
+      - name: ci/download-create-response-of-run
+        if: inputs.run_id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
 
       - name: ci/configure-aws-credentials
@@ -124,36 +220,13 @@ jobs:
           fi
           echo "  $(wc -l < "$LOGS_PATH") line(s): $(grep '^===== .* =====$' "$LOGS_PATH" | tr -d '=' | xargs)"
 
-  # Depends on nothing but the create response, so a failed logs job never keeps the batch alive.
+  # Depends on nothing but the create response, so a failed logs job never keeps the batch alive. By hand, only
+  # after the run named passed its check.
   destroy:
-    needs: logs
-    if: always()
+    needs: [run, logs]
+    if: always() && (inputs.run_id == '' || needs.run.result == 'success')
     runs-on: ubuntu-24.04
     steps:
-      # By hand, the run named must be a run of an E2E workflow on master in this
-      # repository, so a pull request's artifact of the same name is never read.
-      - name: ci/check-run
-        if: inputs.run_id != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::run_id must be a run number, got '${RUN_ID}'"
-            exit 1
-          fi
-          read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
-            --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
-          case "$path" in
-            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml) ;;
-            *) path="not an E2E workflow: ${path}" ;;
-          esac
-          if [[ "$path" == not* ]] || [ "$branch" != master ] ||
-            [ "$repo" != "$GITHUB_REPOSITORY" ] || { [ "$event" != push ] && [ "$event" != workflow_dispatch ]; }; then
-            echo "::error::run ${RUN_ID} is not an E2E Test Stack run on master: ${path} on ${branch} (${event}) from ${repo}"
-            exit 1
-          fi
-
       - name: ci/checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
