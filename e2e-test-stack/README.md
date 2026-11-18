@@ -19,7 +19,7 @@ its test matrix.
 | `tests/api.spec.ts`      | Ping, the admin's role, the licence, membership, a post's create, edit, reaction and delete, a password reset email in Inbucket, and Inbucket refusing a request without the mail token                                   |
 | `tests/services.spec.ts` | Each requested service: MinIO stores and serves an upload; the server's Elasticsearch and LDAP connection tests pass; Keycloak serves the SAML realm the server is pointed at. Skipped when the service was not requested |
 | `tests/ui.spec.ts`       | Login refusing a wrong password, and login opening the channel                                                                                                                                                            |
-| `scripts/probe-gone.sh`  | Run by the workflows after destroy: each site and its `mail-` host must get the router's 404 for a test server that no longer exists, each within 3 minutes                                                               |
+| `scripts/probe-gone.sh`  | Run by the workflows after destroy: each site, its `mail-` host, and its `sso-` host when Keycloak was requested, must get the router's 404 for a test server that no longer exists, each within 3 minutes                |
 
 Each run creates its own team, channel and member, named for the run. Retries are off. No trace or video is kept, and
 CI writes no HTML report and uploads only failed tests' screenshots: the others record the passwords and tokens.
