@@ -19,6 +19,15 @@ export default defineConfig(
     },
   },
   { files: ['**/*.mjs'], extends: [tseslint.configs.disableTypeChecked] },
-  { files: ['tests/**/*.ts'], extends: [playwright.configs['flat/recommended']] },
+  {
+    files: ['tests/**/*.ts'],
+    extends: [playwright.configs['flat/recommended']],
+    rules: {
+      // A test skips itself when its service was not requested.
+      'playwright/no-skipped-test': ['warn', { allowConditional: true }],
+      // call() asserts the response status.
+      'playwright/expect-expect': ['warn', { assertFunctionNames: ['call'] }],
+    },
+  },
   prettier,
 );

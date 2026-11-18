@@ -14,6 +14,7 @@ name: E2E Test Stack - Run
 #
 # Only the two called files make AWS calls: the CI role trusts only them. With
 # keep, the batch is left for e2e-test-stack-destroy.yml, run by hand.
+# e2e-test-stack-run-services.yml calls this workflow with every optional service.
 #
 # Re-run all jobs, not failed jobs: destroy has already released the batch the
 # failed jobs would test. A re-run's instance key carries its attempt number.
@@ -89,9 +90,77 @@ on:
         type: boolean
         default: false
 
+  # Called by e2e-test-stack-run-services.yml, with the same inputs.
+  workflow_call:
+    inputs:
+      channel:
+        description: "Control plane channel"
+        required: false
+        type: string
+        default: "v1"
+      server_image:
+        description: "Mattermost server image on Docker Hub, by tag"
+        required: false
+        type: string
+        default: "mattermostdevelopment/mattermost-enterprise-edition:master"
+      count:
+        description: "Servers to create, one test job each"
+        required: false
+        type: string
+        default: "3"
+      services:
+        description: "Comma-separated optional services: minio or azurite, elasticsearch or opensearch, keycloak, openldap"
+        required: false
+        type: string
+        default: ""
+      ttl:
+        description: "Lifetime before the reaper takes the batch - 90m, 4h"
+        required: false
+        type: string
+        default: "1h"
+      os:
+        description: "Operating system the servers run on"
+        required: false
+        type: string
+        default: "ubuntu-24.04"
+      postgres:
+        description: "Postgres version - '14' to '18'. Empty uses the stack's default."
+        required: false
+        type: string
+        default: ""
+      license:
+        description: "Licence SKU - 'enterprise-advanced'. Empty runs unlicensed."
+        required: false
+        type: string
+        default: "enterprise-advanced"
+      server_env:
+        description: "Server settings as a JSON object of strings, e.g. '{\"MM_FEATUREFLAGS_TESTFEATURE\":\"true\"}'"
+        required: false
+        type: string
+        default: ""
+      wait_for_migrations:
+        description: "Wait for server migrations before reporting ready"
+        required: false
+        type: boolean
+        default: false
+      shared_admin_password:
+        description: "One admin password across the batch"
+        required: false
+        type: boolean
+        default: true
+      keep:
+        description: "Leave the batch running, for e2e-test-stack-destroy.yml"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      E2E_STACK_PRIVATE_KEY:
+        description: "The repository's X25519 private key, which opens the secrets sealed to it"
+        required: true
+
 # Never cancelled: a create cancelled while it waits leaves its batch running until its TTL.
 concurrency:
-  group: e2e-test-stack-${{ github.ref }}
+  group: e2e-test-stack-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -173,6 +242,8 @@ jobs:
           ADMIN_PASSWORD: ${{ steps.server.outputs.admin-password }}
           MAIL_TOKEN: ${{ steps.server.outputs.mail-token }}
           EXPECT_LICENSED: ${{ needs.create.outputs.license != '' }}
+          EXPECT_SERVICES: ${{ inputs.services }}
+          SERVICE_FACTS: ${{ toJSON(fromJSON(steps.server.outputs.instances)[matrix.index].facts) }}
         run: npm test
 
       # Screenshots of failed tests only: the HTML report records the values typed into the page.

@@ -115,7 +115,8 @@ jobs:
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ env.CHANNEL }}
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-          instance-key: tpp-${{ github.run_number }}-${{ github.run_attempt }}
+          # The run id, unique across this repository's workflows; run numbers count per workflow.
+          instance-key: tpp-${{ github.run_id }}-${{ github.run_attempt }}
           server-image: ${{ inputs.server_image }}
           count: ${{ inputs.count }}
           services: ${{ inputs.services }}
