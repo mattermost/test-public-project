@@ -443,6 +443,10 @@ jobs:
     needs: [generate-specs, plan, shard]
     if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-24.04
+    # actions: read to name the one artifact download-artifact extracts into the path itself.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: ci/download-results
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
@@ -456,8 +460,20 @@ jobs:
           SPECS: ${{ needs.plan.outputs.shards }}
           RESULTS: ${{ runner.temp }}/results
           RESULTS_ID: ${{ needs.generate-specs.outputs.results_id }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # download-artifact extracts into the path itself, not a folder named for it, when exactly one artifact
+          # matches: name that artifact's shard, so its file is not taken for another's.
+          root_id=""
+          if [ -f "${RESULTS}/jest-results.json" ]; then
+            names=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+              --jq ".artifacts[].name | select(startswith(\"ios-results-${RESULTS_ID}-\"))")
+            if [ "$(grep -c . <<< "$names")" -eq 1 ]; then
+              root_id=${names##*-}
+            fi
+          fi
           {
             echo "### iOS results"
             echo
@@ -465,13 +481,11 @@ jobs:
             echo "|---|---|---|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           failed=0
-          shards=$(jq '.include | length' <<< "$SPECS")
           for id in $(jq -r '.include[].runId' <<< "$SPECS"); do
             role=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .role' <<< "$SPECS")
             n=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .specs | split(" ") | length' <<< "$SPECS")
             file="${RESULTS}/ios-results-${RESULTS_ID}-${id}/jest-results.json"
-            # One matching artifact is extracted into the path itself, not a folder named for it.
-            if [ ! -f "$file" ] && [ "$shards" -eq 1 ]; then
+            if [ ! -f "$file" ] && [ "$id" = "$root_id" ]; then
               file="${RESULTS}/jest-results.json"
             fi
             if [ -f "$file" ]; then
