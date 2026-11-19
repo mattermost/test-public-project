@@ -1,0 +1,150 @@
+---
+# Copied from mattermost-mobile's .github/actions/provision-e2e-servers/action.yml (ebc91be6e), for
+# e2e-test-stack servers. One step is added, "Adapt mobile's provisioning to the stack": it drops the baseline's
+# AllowedUntrustedInternalConnections entry (the stack pins that setting), and installs only the demo plugin, enabling
+# the prepackaged Agents and Calls instead of downloading them. Otherwise unchanged.
+name: Provision E2E test servers (e2e-test-stack)
+description: >-
+  mattermost-mobile's provision-e2e-servers, for e2e-test-stack servers: the baseline's
+  AllowedUntrustedInternalConnections entry, which the stack pins, is dropped, and only the demo plugin is installed.
+
+inputs:
+  server-urls:
+    description: Newline-separated HTTPS Mattermost test server URLs
+    required: true
+  demo-plugin-server-urls:
+    description: Newline-separated subset of server-urls that get the demo plugin (the full-suite pool servers A and mutation servers B); empty means none
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Validate server URLs
+      env:
+        SERVER_URLS: ${{ inputs.server-urls }}
+        DEMO_PLUGIN_SERVER_URLS: ${{ inputs.demo-plugin-server-urls }}
+      run: |
+        set -euo pipefail
+        validate_url() {
+          local url="$1" label="$2"
+          if [ -z "$url" ]; then return 0; fi
+
+          if [[ "$url" =~ [[:space:]] ]]; then
+            echo "::error::$label contains whitespace: $url"
+            exit 1
+          fi
+
+          if [[ ! "$url" =~ ^https:// ]]; then
+            echo "::error::$label must use HTTPS: $url"
+            exit 1
+          fi
+
+          hostname=$(python3 -c 'import sys; from urllib.parse import urlparse; print(urlparse(sys.argv[1]).hostname or "")' "$url" | tr '[:upper:]' '[:lower:]')
+
+          if echo "$hostname" | grep -qE '^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|0\.|localhost|::1$|::ffff:|fe80:)'; then
+            echo "::error::$label points to a private/internal address: $hostname"
+            exit 1
+          fi
+
+          if ! echo "$hostname" | grep -qE '\.(cloud\.mattermost\.com|test\.mattermost\.cloud|mattermost\.com|mattermost\.cloud)$'; then
+            echo "::error::$label domain not in allowlist: $hostname"
+            exit 1
+          fi
+
+          echo "✓ $label validated: $hostname"
+        }
+
+        index=0
+        while IFS= read -r url; do
+          [ -z "$url" ] && continue
+          index=$((index + 1))
+          validate_url "$url" "SERVER_URL[$index]"
+        done <<< "$SERVER_URLS"
+
+        if [ "$index" -eq 0 ]; then
+          echo "::error::No server URLs provided to provision-e2e-servers"
+          exit 1
+        fi
+
+        while IFS= read -r url; do
+          [ -z "$url" ] && continue
+          if ! grep -Fxq -- "$url" <<< "$SERVER_URLS"; then
+            echo "::error::demo-plugin-server-urls entry is not in server-urls: $url"
+            exit 1
+          fi
+        done <<< "$DEMO_PLUGIN_SERVER_URLS"
+      shell: bash
+
+    # Mobile's provisioning, adapted to the stack in the checked-out code. Each edit fails if mobile's code no longer
+    # matches, so this copy is checked again:
+    # - The stack pins AllowedUntrustedInternalConnections in the server's environment (the service aliases), so the
+    #   baseline's entry asking for the server's own host is dropped.
+    # - Agents and Calls are prepackaged in the server image, running from the start: they are enabled if inactive and
+    #   never downloaded. The demo plugin, from its fixture, is the only plugin installed.
+    - name: Adapt mobile's provisioning to the stack
+      run: |
+        node -e '
+          const fs = require("fs");
+          const edits = [
+            ["detox/shared/server-baseline.ts", /^[ \t]*\x27ServiceSettings\.AllowedUntrustedInternalConnections\x27:.*\n/m, ""],
+            ["detox/provision/provision.ts", /^[ \t]*await ensureAgentsPlugin\(client, token\);\n/m, ""],
+            ["detox/provision/provision.ts", /^[ \t]*if \(plugin\.id === AGENTS_PLUGIN_ID\) \{\n[ \t]*continue;\n[ \t]*\}\n/m, ""],
+            ["detox/provision/constants.ts", /\{id: \x27com\.mattermost\.calls\x27, url: CALLS_PLUGIN_URL, fixture: null\}/, "{id: \x27com.mattermost.calls\x27, url: null, fixture: null}"],
+            ["detox/provision/plugins.ts", /^([ \t]*)logInfo\(`Installing \$\{pluginId\} from Marketplace\.\.\.`\);\n/m,
+              "$1if (pluginId !== DEMO_PLUGIN_ID) {\n$1    logWarn(`${pluginId} is not on the server; it is prepackaged in the stack image and is not downloaded.`);\n$1    return;\n$1}\n$&"],
+          ];
+          for (const [file, pattern, replacement] of edits) {
+            const text = fs.readFileSync(file, "utf8");
+            if (!pattern.test(text)) {
+              console.error(`::error::${file} no longer matches ${pattern}; re-check this copy against mobile`);
+              process.exit(1);
+            }
+            fs.writeFileSync(file, text.replace(pattern, replacement));
+            console.log(`${file}: ${pattern}`);
+          }
+        '
+      shell: bash
+
+    # Runner (not the Mattermost origin) fetches the tarball. install_from_url
+    # through Cloudflare 524s and wedges config/patch + uploads for the shard.
+    - name: Cache demo plugin fixture
+      id: demo-plugin-cache
+      if: inputs.demo-plugin-server-urls != ''
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: detox/e2e/support/fixtures/mattermost-plugin-demo-v0.12.2-linux-amd64.tar.gz
+        key: mattermost-plugin-demo-linux-amd64-v0.12.2
+
+    - name: Download demo plugin fixture
+      if: inputs.demo-plugin-server-urls != '' && steps.demo-plugin-cache.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p detox/e2e/support/fixtures
+        curl -fsSL -o detox/e2e/support/fixtures/mattermost-plugin-demo-v0.12.2-linux-amd64.tar.gz \
+          "https://github.com/mattermost/mattermost-plugin-demo/releases/download/v0.12.2/mattermost-plugin-demo-v0.12.2-linux-amd64.tar.gz"
+        ls -lh detox/e2e/support/fixtures/mattermost-plugin-demo-v0.12.2-linux-amd64.tar.gz
+      shell: bash
+
+    - name: Provision servers (license + plugins)
+      env:
+        SERVER_URLS: ${{ inputs.server-urls }}
+        DEMO_PLUGIN_SERVER_URLS: ${{ inputs.demo-plugin-server-urls }}
+      run: |
+        set -euo pipefail
+        cd detox
+        npm ci --prefer-offline --no-audit --no-fund
+        declare -A provisioned=()
+        while IFS= read -r url; do
+          [ -z "$url" ] && continue
+          if [ -z "${provisioned[$url]+x}" ]; then
+            if grep -Fxq -- "$url" <<< "$DEMO_PLUGIN_SERVER_URLS"; then
+              demo_flag=--demo-plugin
+            else
+              demo_flag=--no-demo-plugin
+            fi
+            echo "--- Provisioning $url ($demo_flag) ---"
+            npm run provision -- "$url" "$demo_flag"
+            provisioned["$url"]=1
+          fi
+        done <<< "$SERVER_URLS"
+      shell: bash
