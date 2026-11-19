@@ -64,7 +64,7 @@ on:
         type: boolean
         default: false
       android_runner:
-        description: "Runner for the Android shards: ubuntu-24.04, or a larger runner such as mobile's ubuntu-latest-8-cores if this repository may use it"
+        description: "Runner for the Android shards; only ubuntu-24.04 until this repository is granted a larger runner (phase C)"
         required: false
         type: string
         default: "ubuntu-24.04"
@@ -96,6 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           LINK: ${{ inputs.build_artifact }}
           SUITE: ${{ inputs.platform }}
+          ANDROID_RUNNER: ${{ inputs.android_runner }}
         run: |
           set -euo pipefail
           pattern="^https://github\.com/${MOBILE_REPOSITORY}/actions/runs/([0-9]+)/artifacts/([0-9]+)/?$"
@@ -128,6 +129,17 @@ jobs:
             esac
             echo "::error::${SUITE} needs ${want} artifact; ${name} is a ${platform} build"
             exit 1
+          fi
+          # Fail before create spins up a server: a runner this repository can't claim queues the
+          # shard forever instead of failing, leaving that server idle until the TTL reaper takes it.
+          if [ "$SUITE" = detox-android ]; then
+            case "$ANDROID_RUNNER" in
+              ubuntu-24.04) ;;
+              *)
+                echo "::error::android_runner '${ANDROID_RUNNER}' is not available to this repository; only ubuntu-24.04 is, until this repository is granted a larger runner such as ubuntu-latest-8-cores (phase C)"
+                exit 1
+                ;;
+            esac
           fi
           if [ "$expired" != false ]; then
             echo "::error::artifact ${name} has expired"
