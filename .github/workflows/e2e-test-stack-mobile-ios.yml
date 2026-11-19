@@ -220,9 +220,15 @@ jobs:
       - name: ci/plan-servers
         id: plan
         env:
-          SPECS: ${{ needs.generate-specs.outputs.specs }}
+          SPLIT: ${{ needs.generate-specs.outputs.specs }}
         run: |
           set -euo pipefail
+          # More shards than specs leaves empty ones, which would run Detox with no spec filter: drop them.
+          SPECS=$(jq -c '{include: [.include[] | select((.specs // "") | test("\\S"))]}' <<< "$SPLIT")
+          if [ "$(jq '.include | length' <<< "$SPECS")" -eq 0 ]; then
+            echo "::error::the split holds no specs"
+            exit 1
+          fi
           read -ra files <<< "$(jq -r '[.include[].specs] | join(" ")' <<< "$SPECS")"
           for f in "${files[@]}"; do
             if [ ! -f "$f" ]; then
@@ -447,7 +453,12 @@ jobs:
             n=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .specs | split(" ") | length' <<< "$SPECS")
             file="${RESULTS}/ios-results-${RESULTS_ID}-${id}/jest-results.json"
             if [ -f "$file" ]; then
-              read -r p f q < <(jq -r '[.numPassedTests, .numFailedTests, .numPendingTests] | @tsv' "$file")
+              # Counted from the test records: a merged retry report may leave out the totals.
+              read -r p f q ok < <(jq -r '[.testResults[]?.assertionResults[]?.status] as $s
+                | [($s | map(select(. == "passed")) | length), ($s | map(select(. == "failed")) | length),
+                   ($s | map(select(. == "pending" or . == "skipped" or . == "todo")) | length),
+                   (if .success == false or (.numFailedTestSuites // 0) > 0 then "no" else "yes" end)] | @tsv' "$file")
+              [ "$ok" = yes ] || failed=1
             else
               p="-"; f="no results"; q="-"; failed=1
             fi

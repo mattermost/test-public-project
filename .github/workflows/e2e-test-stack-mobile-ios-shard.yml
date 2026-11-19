@@ -66,7 +66,9 @@ on:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
         required: true
 
+# actions: read for the download of this run's iOS build by run id.
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -152,6 +154,12 @@ jobs:
 
       - name: ci/prepare-node-deps
         uses: ./.github/actions/prepare-node-deps
+
+      # macos-15 ships Bash 3.2; mobile's provisioning action needs Bash 4+ (declare -A).
+      - name: ci/install-bash
+        run: |
+          brew install bash
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
 
       # The shard's own server, with the demo plugin as mobile's pool and mutation servers have; the caller provisions
       # the shared ones.
@@ -509,7 +517,8 @@ jobs:
         # Android's 537 (same codebase, same 124 spec files) — the 13-test gap was
         # tail tests on shards that timed out at this step. 180 matches the job
         # timeout above so the step uses the full available budget.
-        timeout-minutes: 180
+        # 20 minutes under the job's 180 for the cleanup and report uploads after it.
+        timeout-minutes: 160
         continue-on-error: true  # We want to run all the tests
         run: |
           # Start Metro bundler in background
@@ -524,7 +533,7 @@ jobs:
           echo "Waiting for Metro bundler to be ready..."
           while [ $elapsed -lt $timeout ]; do
             # Try health check endpoint first (more reliable)
-            if curl -s http://localhost:8081/status 2>/dev/null | grep -q "packager-status:running"; then
+            if curl -s --max-time 5 http://localhost:8081/status 2>/dev/null | grep -q "packager-status:running"; then
               echo "✅ Metro bundler is ready after ${elapsed}s (verified via health check)"
               break
             # Fallback to log checking
@@ -560,7 +569,7 @@ jobs:
             # Verify Metro is actually serving the bundle (not just the process is running).
             # This catches cases where Metro reports ready but hasn't finished compilation.
             echo "Verifying Metro can serve bundles..."
-            if curl -s http://localhost:8081/index.ios.bundle 2>/dev/null | grep -q "__d("; then
+            if curl -s --max-time 60 http://localhost:8081/index.ios.bundle 2>/dev/null | grep -q "__d("; then
               echo "✅ Metro is serving bundles successfully"
             else
               echo "⚠️ Warning: Could not verify Metro is serving bundles, proceeding anyway"
@@ -624,6 +633,8 @@ jobs:
               if [ "${#UNRUN_SPECS[@]}" -gt 0 ]; then
                 echo "::warning::Jest died before finishing the shard (exit ${DETOX_EXIT_CODE}); running the ${#UNRUN_SPECS[@]} spec(s) it never started: ${UNRUN_SPECS[*]}"
                 mv artifacts/jest-results.json artifacts/jest-results-attempt1.json
+                # The first attempt's reporter file must not stand in for the retry's.
+                mv artifacts/jest-stare/ios-data.json artifacts/jest-stare/ios-data-attempt1.json 2>/dev/null || true
                 run_specs "${UNRUN_SPECS[@]}" 2>&1 | tee -a "$RUNNER_TEMP/detox-run.log"
                 UNRUN_EXIT_CODE=${PIPESTATUS[0]}
                 if [ ! -f artifacts/jest-results.json ] && [ -f artifacts/jest-stare/ios-data.json ]; then
@@ -668,7 +679,11 @@ jobs:
               run_specs "${RETRY_SPECS[@]}" 2>&1 | tee -a "$RUNNER_TEMP/detox-run.log"
               DETOX_EXIT_CODE=${PIPESTATUS[0]}
               if [ -f artifacts/jest-results.json ]; then
-                node utils/failed-jest-specs.js --attempt1 artifacts/jest-results-attempt1.json --attempt2 artifacts/jest-results.json --output artifacts/jest-results.json
+                if ! node utils/failed-jest-specs.js --attempt1 artifacts/jest-results-attempt1.json --attempt2 artifacts/jest-results.json --output artifacts/jest-results.json; then
+                  echo "::error::the re-run's results could not be merged; keeping the first attempt's"
+                  mv artifacts/jest-results-attempt1.json artifacts/jest-results.json
+                  DETOX_EXIT_CODE=1
+                fi
               else
                 echo "⚠️ The re-run left no jest-results.json — keeping the first attempt's results"
                 mv artifacts/jest-results-attempt1.json artifacts/jest-results.json
@@ -772,6 +787,55 @@ jobs:
           path: detox/artifacts/
           # A re-run of the failed test job replaces the first attempt's results.
           overwrite: true
+
+      - name: Await results service
+        if: |
+          !cancelled() &&
+          steps.upload-ios-report.outcome == 'failure'
+        uses: ./.github/actions/await-results-service
+
+      - name: Upload iOS Test Report (retry 1)
+        id: upload-ios-report-retry
+        if: |
+          !cancelled() &&
+          steps.upload-ios-report.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ios-results-${{ inputs.results_id }}-${{ inputs.run_id }}
+          path: detox/artifacts/
+          overwrite: true
+
+      - name: Await results service (retry 2)
+        if: |
+          !cancelled() &&
+          steps.upload-ios-report.outcome == 'failure' &&
+          steps.upload-ios-report-retry.outcome == 'failure'
+        uses: ./.github/actions/await-results-service
+
+      # Last attempt: overwrite clears an artifact a timed-out attempt may have left behind.
+      - name: Upload iOS Test Report (retry 2)
+        id: upload-ios-report-retry-2
+        if: |
+          !cancelled() &&
+          steps.upload-ios-report.outcome == 'failure' &&
+          steps.upload-ios-report-retry.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ios-results-${{ inputs.results_id }}-${{ inputs.run_id }}
+          path: detox/artifacts/
+          overwrite: true
+
+      # No published results: fail, so the caller keeps the batch and this job can be re-run.
+      - name: ci/check-report-uploaded
+        if: |
+          !cancelled() &&
+          steps.upload-ios-report.outcome == 'failure' &&
+          steps.upload-ios-report-retry.outcome == 'failure' &&
+          steps.upload-ios-report-retry-2.outcome != 'success'
+        run: |
+          echo "::error::the shard's results could not be uploaded"
+          exit 1
 
       # The test step continues on error so the cleanup and upload above run; the shard fails here, after them, so the
       # caller keeps the batch and the failed test job can be re-run.
