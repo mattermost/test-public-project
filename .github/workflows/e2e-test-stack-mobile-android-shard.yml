@@ -6,10 +6,9 @@ name: E2E Test Stack - Mobile Android Shard
 # run's shared second and third servers for the specs that log in to them. The
 # caller creates and destroys the batch.
 #
-# The test job's steps after "Assign test sites" are copied from
-# mattermost-mobile's .github/workflows/e2e-android-template.yml (e2e-android
-# job), with matrix values as inputs, the app and test APKs downloaded from this
-# run, and the TSIO and S3 steps left out.
+# The test job is mattermost-mobile's .github/workflows/e2e-android-template.yml
+# e2e-android job, copied as is but for the lines marked "test-public-project:".
+# matrix values are this workflow's inputs, as a called workflow has no matrix.
 
 on:
   workflow_call:
@@ -42,14 +41,22 @@ on:
         description: "pool or mutation"
         type: string
         required: true
-      device_name:
-        description: "Simulator device"
+      android_avd_name:
+        description: "As mobile's template"
         type: string
-        required: true
-      device_os_version:
-        description: "Simulator OS"
+        default: "detox_pixel_8"
+      android_api_level:
+        description: "As mobile's template"
         type: string
-        required: true
+        default: "35"
+      max_attempts:
+        description: "As mobile's template"
+        type: string
+        default: "2"
+      tsio-shard-name:
+        description: "As mobile's template; empty here, so its TSIO steps are skipped"
+        type: string
+        default: ""
       results_id:
         description: "Separates this run's result artifacts"
         type: string
@@ -73,32 +80,36 @@ env:
 
 jobs:
   test:
-    name: ${{ inputs.role == 'mutation' && 'mutation-' || '' }}machine-${{ inputs.run_id }}
-    # mobile runs these on ubuntu-latest-8-cores; the caller picks.
+    name: ${{ inputs.role == 'mutation' && 'mutation-' || '' }}machine-${{ inputs.run_id }}-api-${{ inputs.android_api_level }}
+    # test-public-project: mobile runs this on ubuntu-latest-8-cores; the caller picks (ubuntu-24.04 by default).
     runs-on: ${{ inputs.runner }}
-    # Above the Detox step's 180, for the cleanup and report uploads after it.
-    timeout-minutes: 210
+    # test-public-project: not continue-on-error as in mobile, so a failed shard fails this job (see the last step).
+    timeout-minutes: 150
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      # test-public-project: mobile's template sets these at its top; ADMIN_* and SITE_* come from the open step.
       IOS: "false"
       RUNNING_E2E: "true"
       HEADLESS: "true"
-      DEVICE_NAME: ${{ inputs.device_name }}
-      DEVICE_OS_VERSION: ${{ inputs.device_os_version }}
-      AVD_NAME: ${{ inputs.device_name }}
-      SDK_VERSION: ${{ inputs.device_os_version }}
+      DEVICE_NAME: ${{ inputs.android_avd_name }}
+      DEVICE_OS_VERSION: ${{ inputs.android_api_level }}
+      AVD_NAME: ${{ inputs.android_avd_name }}
+      SDK_VERSION: ${{ inputs.android_api_level }}
       ARTIFACT_RUN_ID: ${{ github.run_id }}
       ZEPHYR_ENABLE: "false"
       TYPE: "PR"
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
+          # test-public-project: mattermost-mobile at the build's commit, from this repository.
           repository: ${{ env.MOBILE_REPOSITORY }}
           ref: ${{ inputs.mobile_sha }}
           persist-credentials: false
 
+      # test-public-project: the shard's own server and the run's shared ones, from the stack, in place of mobile's
+      # "Assign test sites by shard role".
       - name: ci/download-create-response
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
@@ -173,23 +184,11 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-
       - name: ci/prepare-node-deps
         uses: ./.github/actions/prepare-node-deps
 
-      - name: Cache detox node_modules
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: detox/node_modules
-          key: ${{ runner.os }}-detox-deps-${{ hashFiles('detox/package-lock.json') }}
-          restore-keys: ${{ runner.os }}-detox-deps-
-
-      - name: Install Detox Dependencies
-        run: |
-          cd detox
-          npm install
-
-
+      # test-public-project: this repository's copy of mobile's provisioning action, adapted to the stack, beside
+      # mobile's checkout at the workspace root.
       - name: ci/checkout-provision-action
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -205,7 +204,18 @@ jobs:
           demo-plugin-server-urls: ${{ env.SITE_1_URL }}
 
 
-      # Cache Homebrew packages including applesimutils
+
+      - name: Cache detox node_modules
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: detox/node_modules
+          key: ${{ runner.os }}-detox-deps-${{ hashFiles('detox/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-detox-deps-
+
+      - name: Install Detox Dependencies
+        run: |
+          cd detox
+          npm install
 
       - name: Set .env with RUNNING_E2E=true
         run: |
@@ -213,12 +223,25 @@ jobs:
           RUNNING_E2E=true
           EOF
   
+      # Must precede the download: download-artifact consumes ARTIFACT_RUN_ID and
+      # fails with an opaque API error when it is empty.
+      - name: Verify artifact_run_id was passed by the parent workflow
+        env:
+          ARTIFACT_RUN_ID: ${{ env.ARTIFACT_RUN_ID }}
+        run: |
+          if [ -z "${ARTIFACT_RUN_ID}" ]; then
+            echo "❌ ARTIFACT_RUN_ID is empty — parent workflow must pass artifact_run_id from build-android-apk"
+            exit 1
+          fi
 
-      - name: Download Detox Android build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - name: Download Detox Android build from parent workflow
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: android-build-files-${{ env.ARTIFACT_RUN_ID }}
-          path: android/app/build/outputs/apk
+          repository: ${{ github.repository }}
+          run-id: ${{ env.ARTIFACT_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: android/app/build
 
       - name: Verify Detox Android app from parent build
         run: |
@@ -238,7 +261,6 @@ jobs:
           ls -lh "$APP_APK" "$TEST_APK"
         env:
           ARTIFACT_RUN_ID: ${{ env.ARTIFACT_RUN_ID }}
-
 
       - name: Set up Android SDK
         run: |
@@ -271,15 +293,15 @@ jobs:
       # SDK dirs often fails with exit code 2 when paths already exist on the image.
       - name: Cache Android SDK components
         id: android-sdk-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .android-sdk-cache
-          key: android-sdk-${{ inputs.device_os_version }}-google-apis-x86_64-v2
+          key: android-sdk-${{ inputs.android_api_level }}-google-apis-x86_64-v2
 
       - name: Apply cached Android SDK components
         if: steps.android-sdk-cache.outputs.cache-hit == 'true'
         env:
-          API_LEVEL: ${{ inputs.device_os_version }}
+          API_LEVEL: ${{ inputs.android_api_level }}
         run: |
           for component in platform-tools emulator; do
             if [ -d ".android-sdk-cache/${component}" ]; then
@@ -301,7 +323,7 @@ jobs:
       - name: Install Android SDK components
         if: steps.android-sdk-cache.outputs.cache-hit != 'true'
         env:
-          API_LEVEL: ${{ inputs.device_os_version }}
+          API_LEVEL: ${{ inputs.android_api_level }}
           JAVA_HOME: ${{ env.JAVA_HOME_17_X64 }}
         run: |
           if ! [[ "$API_LEVEL" =~ ^[0-9]+$ ]]; then
@@ -329,14 +351,14 @@ jobs:
 
       # CI AVDs live under detox/.android/avd (see create_android_emulator.sh), not ~/.android/avd.
       - name: Cache Android Emulator & AVD
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             detox/.android
-            detox/${{ env.AVD_NAME }}_api_${{ inputs.device_os_version }}
-          key: android-emulator-${{ runner.os }}-${{ runner.arch }}-${{ env.AVD_NAME }}-api-${{ inputs.device_os_version }}-v3
+            detox/${{ env.AVD_NAME }}_api_${{ inputs.android_api_level }}
+          key: android-emulator-${{ runner.os }}-${{ runner.arch }}-${{ env.AVD_NAME }}-api-${{ inputs.android_api_level }}-v3
           restore-keys: |
-            android-emulator-${{ runner.os }}-${{ runner.arch }}-${{ env.AVD_NAME }}-api-${{ inputs.device_os_version }}-
+            android-emulator-${{ runner.os }}-${{ runner.arch }}-${{ env.AVD_NAME }}-api-${{ inputs.android_api_level }}-
             android-emulator-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Start mm_blocks webhook sidecar
@@ -344,21 +366,20 @@ jobs:
         continue-on-error: true
         env:
           SITE_1_URL: ${{ env.SITE_1_URL }}
+          # test-public-project: mobile's tunnel secrets are not available here; the sidecar falls back as in mobile.
           WEBHOOK_PUBLIC_BASE_URL: ""
           CLOUDFLARED_TUNNEL_TOKEN: ""
         run: bash detox/scripts/start_webhook_sidecar.sh
 
       - name: Create and run Android Emulator
+        # test-public-project: the id, for ci/fail-on-failed-tests.
         id: detox
-        # The shard script's two attempts of up to 60 minutes, and a cold-boot retry: a step timeout fails this step,
-        # so the results still upload and the batch is kept, where a job timeout would cancel the job.
-        timeout-minutes: 180
         env:
           MATRIX_SPECS: ${{ inputs.specs }}
           SITE_1_URL: ${{ env.SITE_1_URL }}
           SITE_2_URL: ${{ env.SITE_2_URL }}
           SITE_3_URL: ${{ env.SITE_3_URL }}
-          MAX_ATTEMPTS: "2"
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
           ATTEMPT_TIMEOUT_MIN: "60"
         shell: bash
         # Attempt 2 retries failed/unrun files only. Cold-boots only if the emulator is dead.
@@ -379,7 +400,7 @@ jobs:
           shard=$!
           tail -n +1 -f --pid="$shard" "$log"
           wait "$shard"
-        continue-on-error: true  # We want to run all the tests
+        continue-on-error: true # We want to run all the tests
 
       # For the E2E triage judge: for each failed test, Detox's failure screenshot,
       # the requests Detox reported the app was still waiting on, and the test's
@@ -390,16 +411,25 @@ jobs:
         working-directory: detox
         run: node utils/triage-evidence.js --results artifacts/jest-results.json --log "$RUNNER_TEMP/detox-run.log" --dir artifacts/triage-evidence --artifacts artifacts --out "artifacts/triage-evidence/evidence-${{ inputs.run_id }}.json"
 
+      - name: Upload triage evidence
+        if: always() && inputs.tsio-shard-name != '' && hashFiles('detox/artifacts/triage-evidence/*.json') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: triage-evidence-${{ inputs.tsio-shard-name }}-${{ inputs.results_id }}-${{ inputs.run_id }}
+          path: detox/artifacts/triage-evidence/
+
       # Second attempt for the same reason as the iOS template: losing this upload to a
       # transient ETIMEDOUT reports the shard as having produced no results at all.
       - name: Upload Android Test Report
         id: upload-android-report
         if: always() && hashFiles('detox/artifacts/**') != ''
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-results-${{ inputs.results_id }}-${{ inputs.run_id }}
           path: detox/artifacts/
+          # test-public-project: a re-run of this job uploads its results again.
           overwrite: true
 
       # Same two-retry sequence as the iOS template (see there).
@@ -415,10 +445,11 @@ jobs:
           !cancelled() &&
           steps.upload-android-report.outcome == 'failure'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-results-${{ inputs.results_id }}-${{ inputs.run_id }}
           path: detox/artifacts/
+          # test-public-project: a re-run of this job uploads its results again.
           overwrite: true
 
       - name: Await results service (retry 2)
@@ -429,30 +460,18 @@ jobs:
         uses: ./.github/actions/await-results-service
 
       - name: Upload Android Test Report (retry 2)
-        id: upload-android-report-retry-2
         if: |
           !cancelled() &&
           steps.upload-android-report.outcome == 'failure' &&
           steps.upload-android-report-retry.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-results-${{ inputs.results_id }}-${{ inputs.run_id }}
           path: detox/artifacts/
           overwrite: true
 
-      # No published results: fail, so the caller keeps the batch and this job can be re-run.
-      - name: ci/check-report-uploaded
-        if: |
-          !cancelled() &&
-          steps.upload-android-report.outcome == 'failure' &&
-          steps.upload-android-report-retry.outcome == 'failure' &&
-          steps.upload-android-report-retry-2.outcome != 'success'
-        run: |
-          echo "::error::the shard's results could not be uploaded"
-          exit 1
-
-      # The emulator step continues on error so the steps above run; the shard fails here, after them, so the caller
-      # keeps the batch and the failed test job can be re-run. The shard script retries failed specs itself.
+      # test-public-project: mobile's report job fails the run on failed tests (this job is continue-on-error
+      # there); here the shard fails, after the steps above, so the run keeps its batch and this job can be re-run on it.
       - name: ci/fail-on-failed-tests
         if: steps.detox.outcome == 'failure'
         run: |
