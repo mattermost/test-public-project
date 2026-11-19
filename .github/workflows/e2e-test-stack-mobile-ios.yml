@@ -101,7 +101,8 @@ jobs:
             echo "::error::the artifact holds no Mattermost-simulator-*.app.zip"
             exit 1
           fi
-          if ! unzip -l "$zip" | grep -q '\.app/Info\.plist$'; then
+          # grep reads the whole listing: -q would stop at the match, and unzip's broken pipe fails the pipeline.
+          if ! unzip -l "$zip" | grep '\.app/Info\.plist$' > /dev/null; then
             echo "::error::${zip} holds no .app bundle"
             exit 1
           fi
