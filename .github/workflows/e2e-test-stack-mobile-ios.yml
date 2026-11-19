@@ -353,8 +353,17 @@ jobs:
       - name: ci/prepare-node-deps
         uses: ./.github/actions/prepare-node-deps
 
+      # This repository's copy of mobile's provisioning action, beside mobile's checkout at the workspace root.
+      - name: ci/checkout-provision-action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          path: .e2e-test-stack
+          persist-credentials: false
+          sparse-checkout: .github/actions/e2e-test-stack-mobile-provision
+
       - name: ci/provision-shared
-        uses: ./.github/actions/provision-e2e-servers
+        uses: ./.e2e-test-stack/.github/actions/e2e-test-stack-mobile-provision
         with:
           server-urls: ${{ steps.urls.outputs.list }}
 
