@@ -1,7 +1,7 @@
 ---
 name: E2E Test Stack - Mobile iOS Shard
 
-# One shard of E2E Test Stack - Mobile iOS: runs the shard's specs on its own
+# One iOS shard of E2E Test Stack - Mobile: runs the shard's specs on its own
 # server of the run's batch (server_index), shared with no other shard, with the
 # run's shared second and third servers for the specs that log in to them. The
 # caller creates and destroys the batch.

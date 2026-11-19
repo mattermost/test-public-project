@@ -1,14 +1,16 @@
 ---
-name: E2E Test Stack - Mobile iOS
+name: E2E Test Stack - Mobile
 
-# By hand only: runs mattermost-mobile's iOS Detox suite on e2e-test-stack
-# servers, to prove the switch before a mobile PR. The app is not built here:
-# the run takes the iOS simulator build a mobile E2E run uploaded, by its
-# artifact link, and the tests run from that build's commit. Mobile's spec
-# splitter makes the shards; one batch serves the run: a server per shard,
-# shared with no other shard, plus the shared second and third servers the
-# multi-server specs log in to. Each shard (e2e-test-stack-mobile-ios-shard.yml)
-# runs on its own server. When every shard passes, the batch is destroyed; when
+# By hand only: runs mattermost-mobile's Detox suite, iOS or Android, on
+# e2e-test-stack servers, to prove the switch before a mobile PR. The app is not
+# built here: the run takes the build a mobile E2E run uploaded, by its artifact
+# link (ios-build-simulator-* or android-build-files-*, which also picks the
+# platform), and the tests run from that build's commit. Mobile's spec splitter
+# makes the shards; one batch serves the run: a server per shard, shared with no
+# other shard, plus the shared second and third servers the multi-server specs
+# log in to. Each shard (e2e-test-stack-mobile-ios-shard.yml or
+# e2e-test-stack-mobile-android-shard.yml) runs on its own server. An iOS and
+# an Android run are separate runs, so never share a server. When every shard passes, the batch is destroyed; when
 # one fails, its logs are collected and the batch is kept, so "Re-run failed
 # jobs" re-runs the failed shards on it and then destroys it. The batch lives
 # 4 hours from create (the control plane's maximum), so a re-run must start
@@ -17,8 +19,8 @@ name: E2E Test Stack - Mobile iOS
 on:
   workflow_dispatch:
     inputs:
-      ios_build_artifact:
-        description: "Link to an ios-build-simulator-* artifact of a mattermost-mobile run, e.g. https://github.com/mattermost/mattermost-mobile/actions/runs/<run>/artifacts/<id>"
+      build_artifact:
+        description: "Link to an ios-build-simulator-* or android-build-files-* artifact of a mattermost-mobile run, e.g. https://github.com/mattermost/mattermost-mobile/actions/runs/<run>/artifacts/<id>"
         required: true
         type: string
       search_path:
@@ -47,31 +49,37 @@ on:
         required: false
         type: string
         default: ""
+      android_runner:
+        description: "Runner for the Android shards: ubuntu-24.04, or a larger runner such as mobile's ubuntu-latest-8-cores if this repository may use it"
+        required: false
+        type: string
+        default: "ubuntu-24.04"
 
 permissions:
   contents: read
 
 env:
   MOBILE_REPOSITORY: mattermost/mattermost-mobile
-  # As in mobile's iOS template.
-  DEVICE_NAME: "iPhone 17 Pro"
-  DEVICE_OS_VERSION: "iOS 26.2"
 
 jobs:
-  # Checks the link names an iOS simulator build of mattermost-mobile that has not expired, and finds its commit.
+  # Checks the link names an iOS or Android build of mattermost-mobile that has not expired, and finds its commit and
+  # platform.
   resolve:
     runs-on: ubuntu-24.04
     outputs:
       run_id: ${{ steps.artifact.outputs.run_id }}
       artifact_id: ${{ steps.artifact.outputs.artifact_id }}
       sha: ${{ steps.artifact.outputs.sha }}
+      platform: ${{ steps.artifact.outputs.platform }}
+      device_name: ${{ steps.artifact.outputs.device_name }}
+      device_os_version: ${{ steps.artifact.outputs.device_os_version }}
       server_image: ${{ steps.image.outputs.image }}
     steps:
       - name: ci/resolve-artifact
         id: artifact
         env:
           GH_TOKEN: ${{ github.token }}
-          LINK: ${{ inputs.ios_build_artifact }}
+          LINK: ${{ inputs.build_artifact }}
         run: |
           set -euo pipefail
           pattern="^https://github\.com/${MOBILE_REPOSITORY}/actions/runs/([0-9]+)/artifacts/([0-9]+)/?$"
@@ -87,8 +95,14 @@ jobs:
             exit 1
           fi
           IFS=$'\t' read -r name expired artifact_run <<< "$info"
-          if [[ "$name" != ios-build-simulator-* ]] || [ "$artifact_run" != "$run_id" ]; then
-            echo "::error::artifact ${artifact_id} is ${name} of run ${artifact_run}, not an iOS simulator build of run ${run_id}"
+          # The device each platform's template runs on.
+          case "$name" in
+            ios-build-simulator-*) platform=ios; build_job=build-ios-simulator; device_name="iPhone 17 Pro"; device_os_version="iOS 26.2" ;;
+            android-build-files-*) platform=android; build_job=build-android-apk; device_name="detox_pixel_8"; device_os_version="35" ;;
+            *) platform="" ;;
+          esac
+          if [ -z "$platform" ] || [ "$artifact_run" != "$run_id" ]; then
+            echo "::error::artifact ${artifact_id} is ${name} of run ${artifact_run}, not an iOS or Android build of run ${run_id}"
             exit 1
           fi
           if [ "$expired" != false ]; then
@@ -107,13 +121,35 @@ jobs:
             echo "::error::run ${run_id} built code from ${head_repo}, not ${MOBILE_REPOSITORY}; only its own branches are run"
             exit 1
           fi
+          # Mobile's E2E workflow builds its MOBILE_VERSION input, which may differ from the run's head; the build job's
+          # checkout step logs the commit it built. The tests must run from that commit, and the check above holds
+          # only when it is the head.
+          job=$(gh api --paginate "repos/${MOBILE_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+            --jq ".jobs[] | select(.name == \"${build_job}\") | .id" | head -1)
+          built=""
+          log="${RUNNER_TEMP}/build-job.log"
+          if [ -n "$job" ] && curl -fsSL -o "$log" -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${MOBILE_REPOSITORY}/actions/jobs/${job}/logs"; then
+            built=$(grep -oE ' ref: [0-9a-f]{40}' "$log" | head -1 | awk '{print $2}')
+          fi
+          if [ -z "$built" ]; then
+            echo "::error::the commit run ${run_id}'s ${build_job} job built could not be read from its log"
+            exit 1
+          fi
+          if [ "$built" != "$sha" ]; then
+            echo "::error::run ${run_id} built ${built}, not its head ${sha}; use a run that built its own head"
+            exit 1
+          fi
           {
             echo "run_id=${run_id}"
             echo "artifact_id=${artifact_id}"
             echo "sha=${sha}"
+            echo "platform=${platform}"
+            echo "device_name=${device_name}"
+            echo "device_os_version=${device_os_version}"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "### iOS build"
+            echo "### ${platform} build"
             echo
             echo "| | |"
             echo "|---|---|"
@@ -137,8 +173,9 @@ jobs:
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "| Server image | \`${IMAGE}\` |" >> "$GITHUB_STEP_SUMMARY"
 
-  # Copies the build into this run once, so every shard downloads it from here.
-  ios-app:
+  # Copies the app into this run once, so every shard downloads it from here: the iOS simulator app, or the Android
+  # app and test APKs alone (mobile's artifact holds the whole build directory, over a gigabyte).
+  app:
     needs: resolve
     runs-on: ubuntu-24.04
     steps:
@@ -149,10 +186,11 @@ jobs:
           repository: ${{ env.MOBILE_REPOSITORY }}
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/ios
+          path: ${{ runner.temp }}/build
 
-      - name: ci/check-app
-        working-directory: ${{ runner.temp }}/ios
+      - name: ci/check-ios-app
+        if: needs.resolve.outputs.platform == 'ios'
+        working-directory: ${{ runner.temp }}/build
         run: |
           set -euo pipefail
           zip=$(find . -name 'Mattermost-simulator-*.app.zip' | head -1)
@@ -168,10 +206,38 @@ jobs:
           echo "  $(basename "$zip"): $(du -h "$zip" | cut -f1)"
 
       - name: ci/upload-ios-app
+        if: needs.resolve.outputs.platform == 'ios'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ios-build-simulator-${{ github.run_id }}
-          path: ${{ runner.temp }}/ios/**/Mattermost-simulator-*.app.zip
+          path: ${{ runner.temp }}/build/**/Mattermost-simulator-*.app.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      # Mobile's template extracts the artifact into android/app/build and runs these two.
+      - name: ci/check-android-apks
+        if: needs.resolve.outputs.platform == 'android'
+        working-directory: ${{ runner.temp }}/build
+        run: |
+          set -euo pipefail
+          for apk in outputs/apk/debug/app-debug.apk outputs/apk/androidTest/debug/app-debug-androidTest.apk; do
+            if [ ! -s "$apk" ]; then
+              echo "::error::the artifact holds no ${apk}"
+              find . -name '*.apk' | head -20
+              exit 1
+            fi
+            echo "  ${apk}: $(du -h "$apk" | cut -f1)"
+          done
+
+      # Uploaded from outputs/apk, so the shard downloads them into android/app/build/outputs/apk.
+      - name: ci/upload-android-apks
+        if: needs.resolve.outputs.platform == 'android'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-build-files-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/build/outputs/apk/debug/app-debug.apk
+            ${{ runner.temp }}/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -201,9 +267,9 @@ jobs:
           parallelism: ${{ inputs.parallelism }}
           search_path: ${{ inputs.search_path }}
           spec_files: ${{ inputs.spec_files }}
-          device_name: ${{ env.DEVICE_NAME }}
-          device_os_version: ${{ env.DEVICE_OS_VERSION }}
-          platform: ios
+          device_name: ${{ needs.resolve.outputs.device_name }}
+          device_os_version: ${{ needs.resolve.outputs.device_os_version }}
+          platform: ${{ needs.resolve.outputs.platform }}
           mutation_targets: B
 
   # Counts the servers: one per shard, plus the shared second and third when a shard's specs log in to them.
@@ -373,16 +439,17 @@ jobs:
         with:
           server-urls: ${{ steps.urls.outputs.list }}
 
-  shard:
-    needs: [resolve, ios-app, generate-specs, plan, create, provision-shared]
+  # One of these runs, for the build's platform. A job that calls a reusable workflow names it literally.
+  shard-ios:
+    needs: [resolve, app, generate-specs, plan, create, provision-shared]
     if: >-
-      always() && needs.ios-app.result == 'success' && needs.create.result == 'success'
+      always() && needs.resolve.outputs.platform == 'ios' && needs.app.result == 'success' && needs.create.result == 'success'
       && (needs.provision-shared.result == 'success' || needs.provision-shared.result == 'skipped')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
     name: shard ${{ matrix.runId }}
-    # actions: read for the shards' download of this run's iOS build by run id.
+    # actions: read for the shards' download of this run's app by run id.
     permissions:
       actions: read
       contents: read
@@ -401,10 +468,41 @@ jobs:
     secrets:
       E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
 
+  shard-android:
+    needs: [resolve, app, generate-specs, plan, create, provision-shared]
+    if: >-
+      always() && needs.resolve.outputs.platform == 'android' && needs.app.result == 'success' && needs.create.result == 'success'
+      && (needs.provision-shared.result == 'success' || needs.provision-shared.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
+    name: shard ${{ matrix.runId }}
+    # actions: read for the shards' download of this run's app by run id.
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/e2e-test-stack-mobile-android-shard.yml
+    with:
+      mobile_sha: ${{ needs.resolve.outputs.sha }}
+      run_id: ${{ matrix.runId }}
+      server_index: ${{ matrix.serverIndex }}
+      site_2_url: ${{ needs.provision-shared.outputs.site_2_url }}
+      site_3_url: ${{ needs.provision-shared.outputs.site_3_url }}
+      specs: ${{ matrix.specs }}
+      role: ${{ matrix.role }}
+      device_name: ${{ matrix.deviceName }}
+      device_os_version: ${{ matrix.deviceOsVersion }}
+      results_id: ${{ needs.generate-specs.outputs.results_id }}
+      runner: ${{ inputs.android_runner }}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+
   # A shard failed: collect every server's logs and keep the batch, so a re-run of the failed shards uses it.
   logs:
-    needs: [plan, create, shard]
-    if: always() && needs.create.result == 'success' && needs.shard.result == 'failure'
+    needs: [plan, create, shard-ios, shard-android]
+    if: >-
+      always() && needs.create.result == 'success'
+      && (needs.shard-ios.result == 'failure' || needs.shard-android.result == 'failure')
     permissions:
       actions: read
       contents: read
@@ -421,10 +519,12 @@ jobs:
   # Every shard passed, the run was cancelled (also during create, once its response is uploaded), or the create
   # failed partway: destroy from the response; logs and the router's 404 only after a complete create.
   destroy:
-    needs: [plan, create, shard]
+    needs: [plan, create, shard-ios, shard-android]
     if: >-
       always() && needs.create.result != 'skipped'
-      && (needs.shard.result == 'success' || needs.shard.result == 'cancelled' || needs.shard.result == 'skipped'
+      && (needs.shard-ios.result == 'success' || needs.shard-android.result == 'success'
+      || needs.shard-ios.result == 'cancelled' || needs.shard-android.result == 'cancelled'
+      || (needs.shard-ios.result == 'skipped' && needs.shard-android.result == 'skipped')
       || needs.create.result == 'failure' || needs.create.result == 'cancelled')
     permissions:
       actions: read
@@ -440,15 +540,19 @@ jobs:
 
   # Each shard's Jest results, counted.
   report:
-    needs: [generate-specs, plan, shard]
+    needs: [resolve, generate-specs, plan, shard-ios, shard-android]
     if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-24.04
+    # actions: read to name the one artifact download-artifact extracts into the path itself.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: ci/download-results
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         continue-on-error: true
         with:
-          pattern: ios-results-${{ needs.generate-specs.outputs.results_id }}-*
+          pattern: ${{ needs.resolve.outputs.platform }}-results-${{ needs.generate-specs.outputs.results_id }}-*
           path: ${{ runner.temp }}/results
 
       - name: ci/summary
@@ -456,22 +560,33 @@ jobs:
           SPECS: ${{ needs.plan.outputs.shards }}
           RESULTS: ${{ runner.temp }}/results
           RESULTS_ID: ${{ needs.generate-specs.outputs.results_id }}
+          PLATFORM: ${{ needs.resolve.outputs.platform }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # download-artifact extracts into the path itself, not a folder named for it, when exactly one artifact
+          # matches: name that artifact's shard, so its file is not taken for another's.
+          root_id=""
+          if [ -f "${RESULTS}/jest-results.json" ]; then
+            names=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+              --jq ".artifacts[].name | select(startswith(\"${PLATFORM}-results-${RESULTS_ID}-\"))")
+            if [ "$(grep -c . <<< "$names")" -eq 1 ]; then
+              root_id=${names##*-}
+            fi
+          fi
           {
-            echo "### iOS results"
+            echo "### ${PLATFORM} results"
             echo
             echo "| Shard | Role | Specs | Passed | Failed | Pending |"
             echo "|---|---|---|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           failed=0
-          shards=$(jq '.include | length' <<< "$SPECS")
           for id in $(jq -r '.include[].runId' <<< "$SPECS"); do
             role=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .role' <<< "$SPECS")
             n=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .specs | split(" ") | length' <<< "$SPECS")
-            file="${RESULTS}/ios-results-${RESULTS_ID}-${id}/jest-results.json"
-            # One matching artifact is extracted into the path itself, not a folder named for it.
-            if [ ! -f "$file" ] && [ "$shards" -eq 1 ]; then
+            file="${RESULTS}/${PLATFORM}-results-${RESULTS_ID}-${id}/jest-results.json"
+            if [ ! -f "$file" ] && [ "$id" = "$root_id" ]; then
               file="${RESULTS}/jest-results.json"
             fi
             if [ -f "$file" ]; then

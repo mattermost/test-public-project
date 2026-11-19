@@ -37,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The E2E Test Stack - Run, Run with services, or Mobile iOS workflow run that created the batch (the number in its URL)"
+        description: "The E2E Test Stack - Run, Run with services, or Mobile workflow run that created the batch (the number in its URL)"
         required: true
         type: string
       channel:
@@ -80,7 +80,7 @@ jobs:
             --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
           case "$path" in
             .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml | \
-              .github/workflows/e2e-test-stack-mobile-ios.yml) ;;
+              .github/workflows/e2e-test-stack-mobile.yml) ;;
             *) path="not an E2E workflow: ${path}" ;;
           esac
           if [[ "$path" == not* ]] || [ "$branch" != master ] ||
