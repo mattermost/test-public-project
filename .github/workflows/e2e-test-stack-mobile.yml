@@ -14,8 +14,8 @@ run-name: "Mobile E2E (${{ inputs.platform }}) · ${{ inputs.spec_files != '' &&
 # an Android run are separate runs, so never share a server. When every shard
 # passes, the batch is destroyed; when one fails, its logs are collected and the batch is kept, so "Re-run failed
 # jobs" re-runs the failed shards on it and then destroys it. The batch lives
-# 4 hours from create (the control plane's maximum), so a re-run must start
-# well within that. A cancelled run destroys its batch.
+# 2 hours from create, so a re-run must start well within that. A cancelled run
+# destroys its batch.
 #
 # Jobs marked "test-public-project:" exist only to run mobile's suite here; the
 # others mirror a job in mobile's E2E workflows, named in their comment.
@@ -371,7 +371,7 @@ jobs:
       channel: ${{ inputs.channel }}
       server_image: ${{ needs.resolve.outputs.server_image }}
       count: ${{ needs.plan.outputs.count }}
-      ttl: 4h
+      ttl: 2h
       license: enterprise-advanced
       shared_admin_password: true
       # Matterwick's settings for mobile's E2E servers, with Shared Channels on from the start. Email is on, as on
