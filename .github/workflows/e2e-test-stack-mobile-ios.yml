@@ -26,8 +26,13 @@ on:
         required: false
         type: string
         default: "detox/e2e/test/products/channels/smoke_test"
+      spec_files:
+        description: "Space-separated spec files under search_path to run instead of all of them, e.g. detox/e2e/test/products/channels/smoke_test/account.e2e.ts"
+        required: false
+        type: string
+        default: ""
       parallelism:
-        description: "Shards, each with its own batch of servers"
+        description: "Shards, each on its own server"
         required: false
         type: string
         default: "1"
@@ -195,6 +200,7 @@ jobs:
         with:
           parallelism: ${{ inputs.parallelism }}
           search_path: ${{ inputs.search_path }}
+          spec_files: ${{ inputs.spec_files }}
           device_name: ${{ env.DEVICE_NAME }}
           device_os_version: ${{ env.DEVICE_OS_VERSION }}
           platform: ios
@@ -437,6 +443,10 @@ jobs:
     needs: [generate-specs, plan, shard]
     if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-24.04
+    # actions: read to name the one artifact download-artifact extracts into the path itself.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: ci/download-results
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
@@ -450,8 +460,20 @@ jobs:
           SPECS: ${{ needs.plan.outputs.shards }}
           RESULTS: ${{ runner.temp }}/results
           RESULTS_ID: ${{ needs.generate-specs.outputs.results_id }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # download-artifact extracts into the path itself, not a folder named for it, when exactly one artifact
+          # matches: name that artifact's shard, so its file is not taken for another's.
+          root_id=""
+          if [ -f "${RESULTS}/jest-results.json" ]; then
+            names=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+              --jq ".artifacts[].name | select(startswith(\"ios-results-${RESULTS_ID}-\"))")
+            if [ "$(grep -c . <<< "$names")" -eq 1 ]; then
+              root_id=${names##*-}
+            fi
+          fi
           {
             echo "### iOS results"
             echo
@@ -463,6 +485,9 @@ jobs:
             role=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .role' <<< "$SPECS")
             n=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .specs | split(" ") | length' <<< "$SPECS")
             file="${RESULTS}/ios-results-${RESULTS_ID}-${id}/jest-results.json"
+            if [ ! -f "$file" ] && [ "$id" = "$root_id" ]; then
+              file="${RESULTS}/jest-results.json"
+            fi
             if [ -f "$file" ]; then
               # Counted from the test records: a merged retry report may leave out the totals.
               read -r p f q ok < <(jq -r '[.testResults[]?.assertionResults[]?.status] as $s
