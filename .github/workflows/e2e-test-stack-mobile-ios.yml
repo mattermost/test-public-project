@@ -26,8 +26,13 @@ on:
         required: false
         type: string
         default: "detox/e2e/test/products/channels/smoke_test"
+      spec_files:
+        description: "Space-separated spec files under search_path to run instead of all of them, e.g. detox/e2e/test/products/channels/smoke_test/account.e2e.ts"
+        required: false
+        type: string
+        default: ""
       parallelism:
-        description: "Shards, each with its own batch of servers"
+        description: "Shards, each on its own server"
         required: false
         type: string
         default: "1"
@@ -195,6 +200,7 @@ jobs:
         with:
           parallelism: ${{ inputs.parallelism }}
           search_path: ${{ inputs.search_path }}
+          spec_files: ${{ inputs.spec_files }}
           device_name: ${{ env.DEVICE_NAME }}
           device_os_version: ${{ env.DEVICE_OS_VERSION }}
           platform: ios
@@ -459,10 +465,15 @@ jobs:
             echo "|---|---|---|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           failed=0
+          shards=$(jq '.include | length' <<< "$SPECS")
           for id in $(jq -r '.include[].runId' <<< "$SPECS"); do
             role=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .role' <<< "$SPECS")
             n=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .specs | split(" ") | length' <<< "$SPECS")
             file="${RESULTS}/ios-results-${RESULTS_ID}-${id}/jest-results.json"
+            # One matching artifact is extracted into the path itself, not a folder named for it.
+            if [ ! -f "$file" ] && [ "$shards" -eq 1 ]; then
+              file="${RESULTS}/jest-results.json"
+            fi
             if [ -f "$file" ]; then
               # Counted from the test records: a merged retry report may leave out the totals.
               read -r p f q ok < <(jq -r '[.testResults[]?.assertionResults[]?.status] as $s
