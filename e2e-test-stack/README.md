@@ -2,12 +2,13 @@
 
 Playwright checks run against one remote test server from the e2e-test-stack control plane, one job per server.
 
-| Workflow                                                                                  | Role                                                                                                                                         | AWS role |
-| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| [`e2e-test-stack-run.yml`](../.github/workflows/e2e-test-stack-run.yml)                   | The E2E workflow: push to `master` and dispatch with every create choice. Calls create, runs the suite per server in a matrix, calls destroy | No       |
-| [`e2e-test-stack-run-services.yml`](../.github/workflows/e2e-test-stack-run-services.yml) | The same, with MinIO, Elasticsearch, Keycloak and OpenLDAP: calls `e2e-test-stack-run.yml` on push to `master` and dispatch                  | No       |
-| [`e2e-test-stack-create.yml`](../.github/workflows/e2e-test-stack-create.yml)             | Reusable: create, fetch to check every server is ready, upload the sealed create response                                                    | Yes      |
-| [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml)           | Reusable, and run by hand for a batch a run kept: every server's logs, destroy, the router's 404, destroy again                              | Yes      |
+| Workflow                                                                                  | Role                                                                                                                                                           | AWS role |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| [`e2e-test-stack-run.yml`](../.github/workflows/e2e-test-stack-run.yml)                   | The E2E workflow: push to `master` and dispatch with every create choice. Calls create, runs the suite per server in a matrix, calls destroy                   | No       |
+| [`e2e-test-stack-run-services.yml`](../.github/workflows/e2e-test-stack-run-services.yml) | The same, with MinIO, Elasticsearch, Keycloak and OpenLDAP: calls `e2e-test-stack-run.yml` on push to `master` and dispatch                                    | No       |
+| [`e2e-test-stack-mobile-ios.yml`](../.github/workflows/e2e-test-stack-mobile-ios.yml)     | By hand only: builds mattermost-mobile's unsigned iOS simulator app from a mobile ref. The first step toward running mobile's iOS Detox suite on stack servers | No       |
+| [`e2e-test-stack-create.yml`](../.github/workflows/e2e-test-stack-create.yml)             | Reusable: create, fetch to check every server is ready, upload the sealed create response                                                                      | Yes      |
+| [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml)           | Reusable, and run by hand for a batch a run kept: every server's logs, destroy, the router's 404, destroy again                                                | Yes      |
 
 Each test job opens its own server's credentials from the uploaded create response with the action's `open`, which
 needs the private key but no AWS role. Masked values do not pass between jobs, and the CI role trusts only the two

@@ -11,6 +11,7 @@ on:
     branches: [master]
     paths:
       - .github/workflows/e2e-test-stack-*.yml
+      - "!.github/workflows/e2e-test-stack-mobile-*.yml"
       - e2e-test-stack/**
   workflow_dispatch:
     inputs:
