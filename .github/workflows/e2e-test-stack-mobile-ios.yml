@@ -256,6 +256,7 @@ jobs:
   create:
     needs: [resolve, plan]
     permissions:
+      actions: read
       contents: read
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-create.yml
@@ -402,13 +403,14 @@ jobs:
     secrets:
       E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
 
-  # Every shard passed, the run was cancelled, or the create failed partway: logs, destroy, and the router's 404.
+  # Every shard passed, the run was cancelled (also during create, once its response is uploaded), or the create
+  # failed partway: destroy from the response; logs and the router's 404 only after a complete create.
   destroy:
     needs: [plan, create, shard]
     if: >-
-      always() && needs.create.result != 'skipped' && needs.create.result != 'cancelled'
+      always() && needs.create.result != 'skipped'
       && (needs.shard.result == 'success' || needs.shard.result == 'cancelled' || needs.shard.result == 'skipped'
-      || needs.create.result == 'failure')
+      || needs.create.result == 'failure' || needs.create.result == 'cancelled')
     permissions:
       actions: read
       contents: read

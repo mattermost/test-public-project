@@ -718,6 +718,13 @@ jobs:
               fi
             fi
           fi
+          # A merged report can say failed (a failure stub kept beside a passing retry) while the last run passed: the
+          # report decides, so a shard never passes with a failed report.
+          if [ "${DETOX_EXIT_CODE:-1}" -eq 0 ] && [ -f artifacts/jest-results.json ] &&
+            ! node -e 'process.exit(require("./artifacts/jest-results.json").success ? 0 : 1)'; then
+            echo "::error::the shard's report says failed though the last run passed"
+            DETOX_EXIT_CODE=1
+          fi
           exit "${DETOX_EXIT_CODE:-1}"
         env:
           DETOX_CONFIG: ${{ inputs.detox_config }}
