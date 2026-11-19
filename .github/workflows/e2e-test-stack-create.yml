@@ -58,6 +58,10 @@ on:
         description: "One admin password across the batch"
         type: boolean
         default: true
+      batch:
+        description: "Names one of several batches in a run (lowercase letters and digits, up to 8): suffixes the instance key and the artifact. Empty for a run's only batch"
+        type: string
+        default: ""
     outputs:
       batch-id:
         description: "The batch's id"
@@ -71,6 +75,9 @@ on:
       license:
         description: "The licence SKU the batch was created with; empty when unlicensed"
         value: ${{ jobs.create.outputs.license }}
+      response-artifact:
+        description: "The name of the artifact holding the create response"
+        value: ${{ jobs.create.outputs.response-artifact }}
     secrets:
       E2E_STACK_PRIVATE_KEY:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
@@ -85,6 +92,8 @@ env:
   CHANNEL: ${{ inputs.channel }}
   LICENSE: ${{ inputs.license }}
   RESPONSE_FILE: e2e-test-stack-create.json
+  # Empty, or "-<batch>" when a run has several batches.
+  BATCH_SUFFIX: ${{ inputs.batch != '' && format('-{0}', inputs.batch) || '' }}
 
 jobs:
   create:
@@ -94,7 +103,18 @@ jobs:
       sites: ${{ steps.create.outputs.sites }}
       indexes: ${{ steps.indexes.outputs.indexes }}
       license: ${{ inputs.license }}
+      response-artifact: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
     steps:
+      - name: ci/check-batch
+        if: inputs.batch != ''
+        env:
+          BATCH: ${{ inputs.batch }}
+        run: |
+          if ! [[ "$BATCH" =~ ^[a-z0-9]{1,8}$ ]]; then
+            echo "::error::batch must be 1 to 8 lowercase letters and digits, got '${BATCH}'"
+            exit 1
+          fi
+
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
@@ -116,7 +136,7 @@ jobs:
           channel: ${{ env.CHANNEL }}
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
           # The run id, unique across this repository's workflows; run numbers count per workflow.
-          instance-key: tpp-${{ github.run_id }}-${{ github.run_attempt }}
+          instance-key: tpp-${{ github.run_id }}-${{ github.run_attempt }}${{ env.BATCH_SUFFIX }}
           server-image: ${{ inputs.server_image }}
           count: ${{ inputs.count }}
           services: ${{ inputs.services }}
@@ -134,9 +154,11 @@ jobs:
         if: always() && steps.create.outputs.response-path != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: e2e-test-stack-create
+          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
           path: ${{ steps.create.outputs.response-path }}
           if-no-files-found: error
+          # A re-run creates a new batch; its response replaces the first attempt's, whose batch was destroyed.
+          overwrite: true
 
       - name: ci/fetch-batch
         id: fetch

@@ -26,6 +26,14 @@ on:
         description: "Called after a run's tests: collect the servers' logs, and require the batch to be destroyed"
         type: boolean
         default: false
+      batch:
+        description: "The batch name given to e2e-test-stack-create.yml, for a run with several batches; empty for a run's only batch"
+        type: string
+        default: ""
+      logs_only:
+        description: "Collect the logs and leave the batch up, for a re-run of failed tests"
+        type: boolean
+        default: false
     secrets:
       E2E_STACK_PRIVATE_KEY:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
@@ -33,7 +41,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The E2E Test Stack - Run, or Run with services, workflow run that created the batch (the number in its URL)"
+        description: "The E2E Test Stack - Run, Run with services, or Mobile iOS workflow run that created the batch (the number in its URL)"
         required: true
         type: string
       channel:
@@ -42,6 +50,11 @@ on:
         type: choice
         options: ["v1", "edge"]
         default: "v1"
+      batch:
+        description: "For a Mobile iOS run: the shard's batch, s<shard>, e.g. s1. Empty for the other runs"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   actions: read
@@ -52,6 +65,8 @@ env:
   CALLER_KEY: test-public-project
   # By hand: the run whose create response to read. Empty when called.
   RUN_ID: ${{ inputs.run_id }}
+  # Empty, or "-<batch>" when a run has several batches.
+  BATCH_SUFFIX: ${{ inputs.batch != '' && format('-{0}', inputs.batch) || '' }}
 
 jobs:
   # By hand only: checks the run named, and finds which of its servers are still up, for logs.
@@ -75,7 +90,8 @@ jobs:
           read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
             --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
           case "$path" in
-            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml) ;;
+            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml | \
+              .github/workflows/e2e-test-stack-mobile-ios.yml) ;;
             *) path="not an E2E workflow: ${path}" ;;
           esac
           if [[ "$path" == not* ]] || [ "$branch" != master ] ||
@@ -93,7 +109,7 @@ jobs:
       - name: ci/download-create-response-of-run
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: e2e-test-stack-create
+          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
           run-id: ${{ env.RUN_ID }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
@@ -159,14 +175,14 @@ jobs:
         if: inputs.run_id == ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: e2e-test-stack-create
+          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
           path: ${{ runner.temp }}/create
 
       - name: ci/download-create-response-of-run
         if: inputs.run_id != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: e2e-test-stack-create
+          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
           run-id: ${{ env.RUN_ID }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
@@ -194,10 +210,12 @@ jobs:
         if: always() && steps.logs.outputs.logs-path != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: e2e-test-stack-logs-${{ matrix.index }}
+          name: e2e-test-stack-logs${{ env.BATCH_SUFFIX }}-${{ matrix.index }}
           path: ${{ steps.logs.outputs.logs-path }}
           if-no-files-found: error
           retention-days: 14
+          # A re-run of failed tests uploads its logs again.
+          overwrite: true
 
       - name: ci/assert-logs
         env:
@@ -224,7 +242,7 @@ jobs:
   # after the run named passed its check.
   destroy:
     needs: [run, logs]
-    if: always() && (inputs.run_id == '' || needs.run.result == 'success')
+    if: always() && !inputs.logs_only && (inputs.run_id == '' || needs.run.result == 'success')
     runs-on: ubuntu-24.04
     steps:
       - name: ci/checkout
@@ -245,14 +263,14 @@ jobs:
         if: inputs.run_id == ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: e2e-test-stack-create
+          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
           path: ${{ runner.temp }}/create
 
       - name: ci/download-create-response-of-run
         if: inputs.run_id != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: e2e-test-stack-create
+          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
           run-id: ${{ env.RUN_ID }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
