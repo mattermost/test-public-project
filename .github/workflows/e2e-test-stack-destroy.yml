@@ -67,6 +67,8 @@ jobs:
     steps:
       # By hand, the run named must be a run of an E2E workflow on master in this
       # repository, so a pull request's artifact of the same name is never read.
+      # e2e-test-stack-mobile-ios.yml is the mobile workflow's former name: a batch
+      # one of its runs kept stays destroyable until its 4-hour TTL ends.
       - name: ci/check-run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,7 +82,7 @@ jobs:
             --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
           case "$path" in
             .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml | \
-              .github/workflows/e2e-test-stack-mobile.yml) ;;
+              .github/workflows/e2e-test-stack-mobile.yml | .github/workflows/e2e-test-stack-mobile-ios.yml) ;;
             *) path="not an E2E workflow: ${path}" ;;
           esac
           if [[ "$path" == not* ]] || [ "$branch" != master ] ||
