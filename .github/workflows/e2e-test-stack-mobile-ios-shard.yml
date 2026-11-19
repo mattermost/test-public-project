@@ -1,11 +1,10 @@
 ---
 name: E2E Test Stack - Mobile iOS Shard
 
-# One shard of E2E Test Stack - Mobile iOS: creates the shard's own batch,
-# runs its specs on it, and destroys it. The batch is 1 server, or 2 or 3 when
-# the shard holds a spec that logs in to a second or third server. When the
-# tests fail, the logs are collected and the batch is kept, so a re-run of the
-# failed test job uses it; its TTL reaps it otherwise.
+# One shard of E2E Test Stack - Mobile iOS: runs the shard's specs on its own
+# server of the run's batch (server_index), shared with no other shard, with the
+# run's shared second and third servers for the specs that log in to them. The
+# caller creates and destroys the batch.
 #
 # The test job's steps after "Assign test sites" are copied from
 # mattermost-mobile's .github/workflows/e2e-ios-template.yml (e2e-ios job),
@@ -22,6 +21,18 @@ on:
         description: "The shard's runId from the spec split"
         type: string
         required: true
+      server_index:
+        description: "The shard's own server in the batch"
+        type: string
+        required: true
+      site_2_url:
+        description: "The run's shared second server; empty when no spec needs one"
+        type: string
+        default: ""
+      site_3_url:
+        description: "The run's shared third server; empty when no spec needs one"
+        type: string
+        default: ""
       specs:
         description: "The shard's space-separated spec files"
         type: string
@@ -42,18 +53,6 @@ on:
         description: "Separates this run's result artifacts"
         type: string
         required: true
-      channel:
-        description: "Control plane channel"
-        type: string
-        default: "v1"
-      server_image:
-        description: "Mattermost server image on Docker Hub, by tag"
-        type: string
-        required: true
-      server_env:
-        description: "Server settings as a JSON object of strings"
-        type: string
-        default: ""
       detox_config:
         description: "Detox configuration; empty for the phone"
         type: string
@@ -74,66 +73,8 @@ env:
   MOBILE_REPOSITORY: mattermost/mattermost-mobile
 
 jobs:
-  # How many servers the shard's specs log in to.
-  plan:
-    runs-on: ubuntu-24.04
-    outputs:
-      count: ${{ steps.count.outputs.count }}
-      batch: ${{ steps.count.outputs.batch }}
-    steps:
-      - name: ci/checkout-mobile-specs
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          repository: ${{ env.MOBILE_REPOSITORY }}
-          ref: ${{ inputs.mobile_sha }}
-          persist-credentials: false
-          sparse-checkout: detox/e2e/test
-
-      - name: ci/count-servers
-        id: count
-        env:
-          SPECS: ${{ inputs.specs }}
-          RUN_ID: ${{ inputs.run_id }}
-        run: |
-          set -euo pipefail
-          read -ra files <<< "$SPECS"
-          for f in "${files[@]}"; do
-            if [ ! -f "$f" ]; then
-              echo "::error::spec ${f} is not in mattermost-mobile at ${{ inputs.mobile_sha }}"
-              exit 1
-            fi
-          done
-          count=1
-          if grep -lqE 'site(Three|3)Url|server(Three|3)Url' "${files[@]}"; then
-            count=3
-          elif grep -lqE 'site(Two|2)Url|server(Two|2)Url' "${files[@]}"; then
-            count=2
-          fi
-          echo "count=${count}" >> "$GITHUB_OUTPUT"
-          echo "batch=s${RUN_ID}" >> "$GITHUB_OUTPUT"
-          echo "shard ${RUN_ID}: ${#files[@]} spec(s), ${count} server(s)"
-
-  create:
-    needs: plan
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/e2e-test-stack-create.yml
-    with:
-      channel: ${{ inputs.channel }}
-      server_image: ${{ inputs.server_image }}
-      count: ${{ needs.plan.outputs.count }}
-      ttl: 4h
-      license: enterprise-advanced
-      server_env: ${{ inputs.server_env }}
-      shared_admin_password: true
-      batch: ${{ needs.plan.outputs.batch }}
-    secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-
   test:
     name: ${{ inputs.role == 'mutation' && 'mutation-' || '' }}machine-${{ inputs.run_id }}
-    needs: [plan, create]
     # As in mobile's template: macos-15.
     runs-on: macos-15
     timeout-minutes: 180
@@ -157,7 +98,7 @@ jobs:
       - name: ci/download-create-response
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          name: ${{ needs.create.outputs.response-artifact }}
+          name: e2e-test-stack-create
           path: ${{ runner.temp }}/create
 
       # The action runs on Node 26; prepare-node-deps below switches to mobile's own version.
@@ -174,14 +115,16 @@ jobs:
           operation: open
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
-          index: 0
+          index: ${{ inputs.server_index }}
 
-      # Server 0 is the shard's own; 1 and 2, when created, are its second and third. One admin password across the
-      # batch, as the specs expect one ADMIN_* set.
+      # The shard's own server, and the run's shared second and third. One admin password across the batch, as the
+      # specs expect one ADMIN_* set.
       - name: Assign test sites
         env:
           ROLE: ${{ inputs.role }}
           SITE_URL: ${{ steps.server.outputs.site-url }}
+          SITE_2: ${{ inputs.site_2_url }}
+          SITE_3: ${{ inputs.site_3_url }}
           INSTANCES: ${{ steps.server.outputs.instances }}
           ADMIN_USERNAME_VALUE: ${{ steps.server.outputs.admin-username }}
           ADMIN_PASSWORD_VALUE: ${{ steps.server.outputs.admin-password }}
@@ -192,9 +135,9 @@ jobs:
             mutation) GUARD=off ;;
             *) echo "::error::Unknown shard role '$ROLE'"; exit 1 ;;
           esac
-          site2=$(jq -r '.[1].site_url // ""' <<< "$INSTANCES")
-          site3=$(jq -r '.[2].site_url // ""' <<< "$INSTANCES")
-          email=$(jq -r '.[0].admin_email // ""' <<< "$INSTANCES")
+          site2="$SITE_2"
+          site3="$SITE_3"
+          email=$(jq -r --argjson i "${{ inputs.server_index }}" '.[$i].admin_email // ""' <<< "$INSTANCES")
           {
             echo "SITE_1_URL=$SITE_URL"
             echo "SITE_2_URL=$site2"
@@ -205,23 +148,17 @@ jobs:
             echo "E2E_SERVER_ROLE=$ROLE"
             echo "E2E_POOL_GUARD=$GUARD"
           } >> "$GITHUB_ENV"
-          {
-            echo "list<<EOF"
-            printf '%s\n' "$SITE_URL" "$site2" "$site3" | sed '/^$/d'
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
           echo "role=$ROLE: SITE_1=$SITE_URL SITE_2=${site2:-unset} SITE_3=${site3:-unset} pool_guard=$GUARD"
-        id: sites
 
       - name: ci/prepare-node-deps
         uses: ./.github/actions/prepare-node-deps
 
-      # The shard's own server gets the demo plugin, as mobile's pool and mutation servers do; the second and third
-      # don't, as mobile's shared server doesn't.
+      # The shard's own server, with the demo plugin as mobile's pool and mutation servers have; the caller provisions
+      # the shared ones.
       - name: Provision test servers
         uses: ./.github/actions/provision-e2e-servers
         with:
-          server-urls: ${{ steps.sites.outputs.list }}
+          server-urls: ${{ env.SITE_1_URL }}
           demo-plugin-server-urls: ${{ env.SITE_1_URL }}
 
 
@@ -836,45 +773,10 @@ jobs:
           # A re-run of the failed test job replaces the first attempt's results.
           overwrite: true
 
-      # The test step continues on error so the cleanup and upload above run; the shard fails here, after them, so a
-      # failed shard keeps its batch and its test job can be re-run.
+      # The test step continues on error so the cleanup and upload above run; the shard fails here, after them, so the
+      # caller keeps the batch and the failed test job can be re-run.
       - name: ci/fail-on-failed-tests
         if: steps.detox.outcome == 'failure'
         run: |
           echo "::error::Detox failed on shard ${{ inputs.run_id }}"
           exit 1
-
-  # Tests failed: keep the batch for a re-run of the failed test job, and collect its logs now.
-  logs:
-    needs: [plan, create, test]
-    if: always() && needs.create.result == 'success' && needs.test.result == 'failure'
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/e2e-test-stack-destroy.yml
-    with:
-      channel: ${{ inputs.channel }}
-      indexes: ${{ needs.create.outputs.indexes }}
-      lifecycle: true
-      batch: ${{ needs.plan.outputs.batch }}
-      logs_only: true
-    secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
-
-  # Tests passed, or the create failed partway: logs, destroy, and the router's 404.
-  destroy:
-    needs: [plan, create, test]
-    if: always() && (needs.test.result == 'success' || needs.create.result == 'failure')
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/e2e-test-stack-destroy.yml
-    with:
-      channel: ${{ inputs.channel }}
-      indexes: ${{ needs.create.outputs.indexes }}
-      lifecycle: ${{ needs.create.result == 'success' }}
-      batch: ${{ needs.plan.outputs.batch }}
-    secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}

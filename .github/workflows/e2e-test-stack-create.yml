@@ -58,10 +58,6 @@ on:
         description: "One admin password across the batch"
         type: boolean
         default: true
-      batch:
-        description: "Names one of several batches in a run (lowercase letters and digits, up to 8): suffixes the instance key and the artifact. Empty for a run's only batch"
-        type: string
-        default: ""
     outputs:
       batch-id:
         description: "The batch's id"
@@ -75,9 +71,6 @@ on:
       license:
         description: "The licence SKU the batch was created with; empty when unlicensed"
         value: ${{ jobs.create.outputs.license }}
-      response-artifact:
-        description: "The name of the artifact holding the create response"
-        value: ${{ jobs.create.outputs.response-artifact }}
     secrets:
       E2E_STACK_PRIVATE_KEY:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
@@ -92,8 +85,6 @@ env:
   CHANNEL: ${{ inputs.channel }}
   LICENSE: ${{ inputs.license }}
   RESPONSE_FILE: e2e-test-stack-create.json
-  # Empty, or "-<batch>" when a run has several batches.
-  BATCH_SUFFIX: ${{ inputs.batch != '' && format('-{0}', inputs.batch) || '' }}
 
 jobs:
   create:
@@ -103,18 +94,7 @@ jobs:
       sites: ${{ steps.create.outputs.sites }}
       indexes: ${{ steps.indexes.outputs.indexes }}
       license: ${{ inputs.license }}
-      response-artifact: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
     steps:
-      - name: ci/check-batch
-        if: inputs.batch != ''
-        env:
-          BATCH: ${{ inputs.batch }}
-        run: |
-          if ! [[ "$BATCH" =~ ^[a-z0-9]{1,8}$ ]]; then
-            echo "::error::batch must be 1 to 8 lowercase letters and digits, got '${BATCH}'"
-            exit 1
-          fi
-
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
@@ -127,6 +107,38 @@ jobs:
           role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
           aws-region: us-east-1
 
+      # A re-run of this job (re-run all jobs, or of a failed create) would leave the earlier attempt's batch
+      # running, and overwrite the response that names it: destroy it first. Already gone is fine.
+      - name: ci/download-earlier-response
+        id: earlier
+        if: github.run_attempt > 1
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/earlier
+
+      - name: ci/destroy-earlier-batch
+        id: destroy-earlier
+        if: steps.earlier.outcome == 'success' && hashFiles(format('{0}/earlier/{1}', runner.temp, env.RESPONSE_FILE)) != ''
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        with:
+          operation: destroy
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/earlier/${{ env.RESPONSE_FILE }}
+
+      - name: ci/assert-earlier-destroyed
+        if: steps.destroy-earlier.outcome == 'success'
+        env:
+          STATE: ${{ steps.destroy-earlier.outputs.state }}
+        run: |
+          case "$STATE" in
+            destroyed | "not found") echo "earlier attempt's batch: ${STATE}" ;;
+            *) echo "::error::the earlier attempt's batch says state '${STATE}', want destroyed"; exit 1 ;;
+          esac
+
       - name: ci/create
         id: create
         uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
@@ -136,7 +148,7 @@ jobs:
           channel: ${{ env.CHANNEL }}
           private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
           # The run id, unique across this repository's workflows; run numbers count per workflow.
-          instance-key: tpp-${{ github.run_id }}-${{ github.run_attempt }}${{ env.BATCH_SUFFIX }}
+          instance-key: tpp-${{ github.run_id }}-${{ github.run_attempt }}
           server-image: ${{ inputs.server_image }}
           count: ${{ inputs.count }}
           services: ${{ inputs.services }}
@@ -154,10 +166,10 @@ jobs:
         if: always() && steps.create.outputs.response-path != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: e2e-test-stack-create${{ env.BATCH_SUFFIX }}
+          name: e2e-test-stack-create
           path: ${{ steps.create.outputs.response-path }}
           if-no-files-found: error
-          # A re-run creates a new batch; its response replaces the first attempt's, whose batch was destroyed.
+          # A re-run creates a new batch; its response replaces the earlier attempt's, whose batch was destroyed above.
           overwrite: true
 
       - name: ci/fetch-batch
