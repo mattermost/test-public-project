@@ -76,7 +76,9 @@ on:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
         required: true
 
+# actions: read to find an earlier attempt's create response in this run.
 permissions:
+  actions: read
   contents: read
   id-token: write
 
@@ -106,6 +108,56 @@ jobs:
         with:
           role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
           aws-region: us-east-1
+
+      # A re-run of this job (re-run all jobs, or of a failed create) would leave the earlier attempt's batch
+      # running, and overwrite the response that names it: destroy it first. No earlier response: nothing to do. An
+      # earlier response that can't be downloaded stops the create rather than lose that batch.
+      - name: ci/find-earlier-response
+        id: earlier
+        if: github.run_attempt > 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          DIR: ${{ runner.temp }}/earlier
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=e2e-test-stack-create" --jq .total_count)
+          if [ "$count" -eq 0 ]; then
+            echo "no earlier create response in this run"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            rm -rf "$DIR"
+            if gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n e2e-test-stack-create -D "$DIR" && [ -s "$DIR/${RESPONSE_FILE}" ]; then
+              echo "found=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          echo "::error::the earlier attempt's create response exists but could not be downloaded; not creating another batch"
+          exit 1
+
+      - name: ci/destroy-earlier-batch
+        id: destroy-earlier
+        if: steps.earlier.outputs.found == 'true'
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        with:
+          operation: destroy
+          caller-key: ${{ env.CALLER_KEY }}
+          channel: ${{ env.CHANNEL }}
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/earlier/${{ env.RESPONSE_FILE }}
+
+      - name: ci/assert-earlier-destroyed
+        if: steps.destroy-earlier.outcome == 'success'
+        env:
+          STATE: ${{ steps.destroy-earlier.outputs.state }}
+        run: |
+          case "$STATE" in
+            destroyed | "not found") echo "earlier attempt's batch: ${STATE}" ;;
+            *) echo "::error::the earlier attempt's batch says state '${STATE}', want destroyed"; exit 1 ;;
+          esac
 
       - name: ci/create
         id: create
@@ -137,6 +189,8 @@ jobs:
           name: e2e-test-stack-create
           path: ${{ steps.create.outputs.response-path }}
           if-no-files-found: error
+          # A re-run creates a new batch; its response replaces the earlier attempt's, whose batch was destroyed above.
+          overwrite: true
 
       - name: ci/fetch-batch
         id: fetch

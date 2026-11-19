@@ -2,9 +2,17 @@
 name: E2E Test Stack - Mobile iOS
 
 # By hand only: runs mattermost-mobile's iOS Detox suite on e2e-test-stack
-# servers, one batch per shard, to prove the switch before a mobile PR. The app
-# is not built here: the run takes the iOS simulator build a mobile E2E run
-# uploaded, by its artifact link, and the tests run from that build's commit.
+# servers, to prove the switch before a mobile PR. The app is not built here:
+# the run takes the iOS simulator build a mobile E2E run uploaded, by its
+# artifact link, and the tests run from that build's commit. Mobile's spec
+# splitter makes the shards; one batch serves the run: a server per shard,
+# shared with no other shard, plus the shared second and third servers the
+# multi-server specs log in to. Each shard (e2e-test-stack-mobile-ios-shard.yml)
+# runs on its own server. When every shard passes, the batch is destroyed; when
+# one fails, its logs are collected and the batch is kept, so "Re-run failed
+# jobs" re-runs the failed shards on it and then destroys it. The batch lives
+# 4 hours from create (the control plane's maximum), so a re-run must start
+# well within that. A cancelled run destroys its batch.
 
 on:
   workflow_dispatch:
@@ -13,12 +21,36 @@ on:
         description: "Link to an ios-build-simulator-* artifact of a mattermost-mobile run, e.g. https://github.com/mattermost/mattermost-mobile/actions/runs/<run>/artifacts/<id>"
         required: true
         type: string
+      search_path:
+        description: "Spec directory to run, e.g. detox/e2e/test for every spec"
+        required: false
+        type: string
+        default: "detox/e2e/test/products/channels/smoke_test"
+      parallelism:
+        description: "Shards, each with its own batch of servers"
+        required: false
+        type: string
+        default: "1"
+      channel:
+        description: "Control plane channel"
+        required: false
+        type: choice
+        options: ["v1", "edge"]
+        default: "v1"
+      server_image:
+        description: "Mattermost server image on Docker Hub, by tag. Empty is the latest mattermost/mattermost release"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 env:
   MOBILE_REPOSITORY: mattermost/mattermost-mobile
+  # As in mobile's iOS template.
+  DEVICE_NAME: "iPhone 17 Pro"
+  DEVICE_OS_VERSION: "iOS 26.2"
 
 jobs:
   # Checks the link names an iOS simulator build of mattermost-mobile that has not expired, and finds its commit.
@@ -28,6 +60,7 @@ jobs:
       run_id: ${{ steps.artifact.outputs.run_id }}
       artifact_id: ${{ steps.artifact.outputs.artifact_id }}
       sha: ${{ steps.artifact.outputs.sha }}
+      server_image: ${{ steps.image.outputs.image }}
     steps:
       - name: ci/resolve-artifact
         id: artifact
@@ -58,11 +91,17 @@ jobs:
             exit 1
           fi
           if ! info=$(gh api "repos/${MOBILE_REPOSITORY}/actions/runs/${run_id}" \
-            --jq '[.head_sha, .head_branch, .name] | @tsv' 2>&1); then
+            --jq '[.head_sha, .head_branch, .name, .head_repository.full_name] | @tsv' 2>&1); then
             echo "::error::run ${run_id} of ${MOBILE_REPOSITORY} could not be read: ${info}"
             exit 1
           fi
-          IFS=$'\t' read -r sha branch workflow <<< "$info"
+          IFS=$'\t' read -r sha branch workflow head_repo <<< "$info"
+          # The shards run this commit's code in a job that holds the repository's private key: only code from
+          # mattermost-mobile itself, never a fork's pull request.
+          if [ "$head_repo" != "$MOBILE_REPOSITORY" ]; then
+            echo "::error::run ${run_id} built code from ${head_repo}, not ${MOBILE_REPOSITORY}; only its own branches are run"
+            exit 1
+          fi
           {
             echo "run_id=${run_id}"
             echo "artifact_id=${artifact_id}"
@@ -77,6 +116,21 @@ jobs:
             echo "| Run | [${workflow} ${run_id}](https://github.com/${MOBILE_REPOSITORY}/actions/runs/${run_id}) on \`${branch}\` |"
             echo "| Commit | [\`${sha:0:12}\`](https://github.com/${MOBILE_REPOSITORY}/commit/${sha}) |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The latest mattermost/mattermost release unless one is given, as Matterwick picks for mobile.
+      - name: ci/resolve-server-image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ inputs.server_image }}
+        run: |
+          set -euo pipefail
+          if [ -z "$IMAGE" ]; then
+            tag=$(gh api repos/mattermost/mattermost/releases/latest --jq .tag_name)
+            IMAGE="mattermost/mattermost-enterprise-edition:${tag#v}"
+          fi
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "| Server image | \`${IMAGE}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # Copies the build into this run once, so every shard downloads it from here.
   ios-app:
@@ -115,3 +169,303 @@ jobs:
           path: ${{ runner.temp }}/ios/**/Mattermost-simulator-*.app.zip
           if-no-files-found: error
           retention-days: 14
+
+  # Mobile's spec splitter. Mutation specs go to target B only, a shard with its own server like every other.
+  generate-specs:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    outputs:
+      specs: ${{ steps.generate-specs.outputs.specs }}
+      results_id: ${{ steps.results-id.outputs.id }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: ci/results-id
+        id: results-id
+        run: echo "id=$(tr -dc a-z0-9 < /dev/urandom | head -c 10)" >> "$GITHUB_OUTPUT"
+
+      - name: ci/generate-specs
+        id: generate-specs
+        uses: ./.github/actions/generate-specs
+        with:
+          parallelism: ${{ inputs.parallelism }}
+          search_path: ${{ inputs.search_path }}
+          device_name: ${{ env.DEVICE_NAME }}
+          device_os_version: ${{ env.DEVICE_OS_VERSION }}
+          platform: ios
+          mutation_targets: B
+
+  # Counts the servers: one per shard, plus the shared second and third when a shard's specs log in to them.
+  plan:
+    needs: [resolve, generate-specs]
+    runs-on: ubuntu-24.04
+    outputs:
+      count: ${{ steps.plan.outputs.count }}
+      shards: ${{ steps.plan.outputs.shards }}
+      shared: ${{ steps.plan.outputs.shared }}
+    steps:
+      - name: ci/checkout-mobile-specs
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+          sparse-checkout: detox/e2e/test
+
+      - name: ci/plan-servers
+        id: plan
+        env:
+          SPLIT: ${{ needs.generate-specs.outputs.specs }}
+        run: |
+          set -euo pipefail
+          # More shards than specs leaves empty ones, which would run Detox with no spec filter: drop them.
+          SPECS=$(jq -c '{include: [.include[] | select((.specs // "") | test("\\S"))]}' <<< "$SPLIT")
+          if [ "$(jq '.include | length' <<< "$SPECS")" -eq 0 ]; then
+            echo "::error::the split holds no specs"
+            exit 1
+          fi
+          read -ra files <<< "$(jq -r '[.include[].specs] | join(" ")' <<< "$SPECS")"
+          for f in "${files[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::spec ${f} is not in ${MOBILE_REPOSITORY} at the build's commit"
+              exit 1
+            fi
+          done
+          shared=0
+          if grep -lqE 'site(Three|3)Url|server(Three|3)Url' "${files[@]}"; then
+            shared=2
+          elif grep -lqE 'site(Two|2)Url|server(Two|2)Url' "${files[@]}"; then
+            shared=1
+          fi
+          n=$(jq '.include | length' <<< "$SPECS")
+          # Shard i (in split order) gets server i; the shared ones follow.
+          shards=$(jq -c '{include: [.include | to_entries[] | .value + {serverIndex: (.key | tostring)}]}' <<< "$SPECS")
+          {
+            echo "count=$((n + shared))"
+            echo "shards=${shards}"
+            echo "shared=$(jq -nc --argjson n "$n" --argjson s "$shared" '[range($n; $n + $s)]')"
+          } >> "$GITHUB_OUTPUT"
+          echo "${n} shard(s), ${shared} shared server(s): $((n + shared)) in all" >> "$GITHUB_STEP_SUMMARY"
+
+  # One batch for the run.
+  create:
+    needs: [resolve, plan]
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-test-stack-create.yml
+    with:
+      channel: ${{ inputs.channel }}
+      server_image: ${{ needs.resolve.outputs.server_image }}
+      count: ${{ needs.plan.outputs.count }}
+      ttl: 4h
+      license: enterprise-advanced
+      shared_admin_password: true
+      # Matterwick's settings for mobile's E2E servers, with Shared Channels on from the start.
+      server_env: >-
+        {"MM_SERVICESETTINGS_ENABLETUTORIAL":"false","MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW":"false",
+        "MM_SERVICESETTINGS_ENABLEUSERTYPINGMESSAGES":"false","MM_SERVICESETTINGS_SESSIONLENGTHMOBILEINHOURS":"5000",
+        "MM_SERVICESETTINGS_SESSIONCACHEINMINUTES":"180","MM_SERVICEENVIRONMENT":"test",
+        "MM_RATELIMITSETTINGS_ENABLE":"true","MM_RATELIMITSETTINGS_PERSEC":"10000","MM_RATELIMITSETTINGS_MAXBURST":"50000",
+        "MM_RATELIMITSETTINGS_MEMORYSTORESIZE":"10000","MM_RATELIMITSETTINGS_VARYBYREMOTEADDR":"false",
+        "MM_RATELIMITSETTINGS_VARYBYUSER":"false","MM_TEAMSETTINGS_EXPERIMENTALENABLEAUTOMATICREPLIES":"true",
+        "MM_FEATUREFLAGS_CHANNELBOOKMARKS":"true","MM_FEATUREFLAGS_CUSTOMPROFILEATTRIBUTES":"true",
+        "MM_FEATUREFLAGS_INTERACTIVEDIALOGAPPSFORM":"true","MM_FEATUREFLAGS_MMBLOCKSENABLED":"true",
+        "MM_FILESETTINGS_ENABLEPUBLICLINK":"true","MM_PASSWORDSETTINGS_MINIMUMLENGTH":"8",
+        "MM_PLUGINSETTINGS_ENABLEMARKETPLACE":"true","MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE":"true",
+        "MM_PLUGINSETTINGS_ENABLEUPLOADS":"true","MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION":"true",
+        "MM_SERVICESETTINGS_ENABLECHANNELBOOKMARKS":"true","MM_SERVICESETTINGS_MAXIMUMACTIVEUSERS":"999999",
+        "MM_SERVICESETTINGS_MAXIMUMLOGINATTEMPTS":"999999","MM_SERVICESETTINGS_SESSIONLENGTHWEBINHOURS":"4320",
+        "MM_SUPPORTSETTINGS_HELPLINK":"https://docs.mattermost.com/","MM_SUPPORTSETTINGS_REPORTAPROBLEMTYPE":"default",
+        "MM_TEAMSETTINGS_MAXUSERSPERTEAM":"999999","MM_EXPERIMENTALSETTINGS_ENABLEWATERMARK":"false",
+        "MM_EXPERIMENTALSETTINGS_RESTRICTSYSTEMADMIN":"false",
+        "MM_CONNECTEDWORKSPACESSETTINGS_ENABLEREMOTECLUSTERSERVICE":"true",
+        "MM_CONNECTEDWORKSPACESSETTINGS_ENABLESHAREDCHANNELS":"true"}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+
+  # The shared servers, provisioned once, without the demo plugin, as mobile's shared server is.
+  provision-shared:
+    needs: [resolve, plan, create]
+    if: needs.plan.outputs.shared != '[]'
+    runs-on: ubuntu-24.04
+    outputs:
+      site_2_url: ${{ steps.urls.outputs.site_2_url }}
+      site_3_url: ${{ steps.urls.outputs.site_3_url }}
+    steps:
+      - name: ci/checkout-mobile
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: ${{ env.MOBILE_REPOSITORY }}
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: ci/download-create-response
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: e2e-test-stack-create
+          path: ${{ runner.temp }}/create
+
+      - name: ci/setup-node-for-stack
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+
+      - name: ci/open-shared
+        id: server
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        with:
+          operation: open
+          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+          index: ${{ fromJSON(needs.plan.outputs.shared)[0] }}
+
+      - name: ci/shared-urls
+        id: urls
+        env:
+          SITES: ${{ needs.create.outputs.sites }}
+          SHARED: ${{ needs.plan.outputs.shared }}
+          ADMIN_USERNAME_VALUE: ${{ steps.server.outputs.admin-username }}
+          ADMIN_PASSWORD_VALUE: ${{ steps.server.outputs.admin-password }}
+        run: |
+          set -euo pipefail
+          site2=$(jq -r --argjson s "$SHARED" '.[$s[0]] // ""' <<< "$SITES")
+          site3=$(jq -r --argjson s "$SHARED" 'if ($s | length) > 1 then .[$s[1]] else "" end' <<< "$SITES")
+          {
+            echo "site_2_url=${site2}"
+            echo "site_3_url=${site3}"
+            echo "list<<EOF"
+            printf '%s\n' "$site2" "$site3" | sed '/^$/d'
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "ADMIN_USERNAME=$ADMIN_USERNAME_VALUE"
+            echo "ADMIN_PASSWORD=$ADMIN_PASSWORD_VALUE"
+          } >> "$GITHUB_ENV"
+
+      - name: ci/prepare-node-deps
+        uses: ./.github/actions/prepare-node-deps
+
+      - name: ci/provision-shared
+        uses: ./.github/actions/provision-e2e-servers
+        with:
+          server-urls: ${{ steps.urls.outputs.list }}
+
+  shard:
+    needs: [resolve, ios-app, generate-specs, plan, create, provision-shared]
+    if: >-
+      always() && needs.ios-app.result == 'success' && needs.create.result == 'success'
+      && (needs.provision-shared.result == 'success' || needs.provision-shared.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
+    name: shard ${{ matrix.runId }}
+    # actions: read for the shards' download of this run's iOS build by run id.
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/e2e-test-stack-mobile-ios-shard.yml
+    with:
+      mobile_sha: ${{ needs.resolve.outputs.sha }}
+      run_id: ${{ matrix.runId }}
+      server_index: ${{ matrix.serverIndex }}
+      site_2_url: ${{ needs.provision-shared.outputs.site_2_url }}
+      site_3_url: ${{ needs.provision-shared.outputs.site_3_url }}
+      specs: ${{ matrix.specs }}
+      role: ${{ matrix.role }}
+      device_name: ${{ matrix.deviceName }}
+      device_os_version: ${{ matrix.deviceOsVersion }}
+      results_id: ${{ needs.generate-specs.outputs.results_id }}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+
+  # A shard failed: collect every server's logs and keep the batch, so a re-run of the failed shards uses it.
+  logs:
+    needs: [plan, create, shard]
+    if: always() && needs.create.result == 'success' && needs.shard.result == 'failure'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-test-stack-destroy.yml
+    with:
+      channel: ${{ inputs.channel }}
+      indexes: ${{ needs.create.outputs.indexes }}
+      lifecycle: true
+      logs_only: true
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+
+  # Every shard passed, the run was cancelled (also during create, once its response is uploaded), or the create
+  # failed partway: destroy from the response; logs and the router's 404 only after a complete create.
+  destroy:
+    needs: [plan, create, shard]
+    if: >-
+      always() && needs.create.result != 'skipped'
+      && (needs.shard.result == 'success' || needs.shard.result == 'cancelled' || needs.shard.result == 'skipped'
+      || needs.create.result == 'failure' || needs.create.result == 'cancelled')
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/e2e-test-stack-destroy.yml
+    with:
+      channel: ${{ inputs.channel }}
+      indexes: ${{ needs.create.outputs.indexes }}
+      lifecycle: ${{ needs.create.result == 'success' }}
+    secrets:
+      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+
+  # Each shard's Jest results, counted.
+  report:
+    needs: [generate-specs, plan, shard]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: ci/download-results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: ios-results-${{ needs.generate-specs.outputs.results_id }}-*
+          path: ${{ runner.temp }}/results
+
+      - name: ci/summary
+        env:
+          SPECS: ${{ needs.plan.outputs.shards }}
+          RESULTS: ${{ runner.temp }}/results
+          RESULTS_ID: ${{ needs.generate-specs.outputs.results_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### iOS results"
+            echo
+            echo "| Shard | Role | Specs | Passed | Failed | Pending |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          for id in $(jq -r '.include[].runId' <<< "$SPECS"); do
+            role=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .role' <<< "$SPECS")
+            n=$(jq -r --arg id "$id" '.include[] | select(.runId == $id) | .specs | split(" ") | length' <<< "$SPECS")
+            file="${RESULTS}/ios-results-${RESULTS_ID}-${id}/jest-results.json"
+            if [ -f "$file" ]; then
+              # Counted from the test records: a merged retry report may leave out the totals.
+              read -r p f q ok < <(jq -r '[.testResults[]?.assertionResults[]?.status] as $s
+                | [($s | map(select(. == "passed")) | length), ($s | map(select(. == "failed")) | length),
+                   ($s | map(select(. == "pending" or . == "skipped" or . == "todo")) | length),
+                   (if .success == false or (.numFailedTestSuites // 0) > 0 then "no" else "yes" end)] | @tsv' "$file")
+              [ "$ok" = yes ] || failed=1
+            else
+              p="-"; f="no results"; q="-"; failed=1
+            fi
+            [ "$f" != 0 ] && failed=1
+            echo "| ${id} | ${role} | ${n} | ${p} | ${f} | ${q} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"
+

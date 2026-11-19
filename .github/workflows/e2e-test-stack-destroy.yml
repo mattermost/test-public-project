@@ -26,6 +26,10 @@ on:
         description: "Called after a run's tests: collect the servers' logs, and require the batch to be destroyed"
         type: boolean
         default: false
+      logs_only:
+        description: "Collect the logs and leave the batch up, for a re-run of failed tests"
+        type: boolean
+        default: false
     secrets:
       E2E_STACK_PRIVATE_KEY:
         description: "The repository's X25519 private key, which opens the secrets sealed to it"
@@ -33,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: "The E2E Test Stack - Run, or Run with services, workflow run that created the batch (the number in its URL)"
+        description: "The E2E Test Stack - Run, Run with services, or Mobile iOS workflow run that created the batch (the number in its URL)"
         required: true
         type: string
       channel:
@@ -75,7 +79,8 @@ jobs:
           read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
             --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
           case "$path" in
-            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml) ;;
+            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml | \
+              .github/workflows/e2e-test-stack-mobile-ios.yml) ;;
             *) path="not an E2E workflow: ${path}" ;;
           esac
           if [[ "$path" == not* ]] || [ "$branch" != master ] ||
@@ -198,6 +203,8 @@ jobs:
           path: ${{ steps.logs.outputs.logs-path }}
           if-no-files-found: error
           retention-days: 14
+          # A re-run of failed tests uploads its logs again.
+          overwrite: true
 
       - name: ci/assert-logs
         env:
@@ -224,7 +231,7 @@ jobs:
   # after the run named passed its check.
   destroy:
     needs: [run, logs]
-    if: always() && (inputs.run_id == '' || needs.run.result == 'success')
+    if: always() && !inputs.logs_only && (inputs.run_id == '' || needs.run.result == 'success')
     runs-on: ubuntu-24.04
     steps:
       - name: ci/checkout
