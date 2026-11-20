@@ -18,11 +18,18 @@ needs the private key but no AWS role. Masked values do not pass between jobs, a
 called files. Mobile and desktop follow the same shape: their existing E2E workflow calls their own two files around
 its test matrix.
 
+Each workflow that creates servers takes an `account` input: `prod`, the default and what a push runs, or `dev`. Create
+assumes that account's CI role, from the repository variable `MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD` or
+`MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV`, and records the account beside the create response. Destroy runs in the account
+the batch recorded; by hand, its `account` input names the account of a run that recorded none. Both accounts register
+the same public key for this repository, so `E2E_STACK_PRIVATE_KEY` opens either's secrets.
+
 | File                     | What it checks                                                                                                                                                                                                            |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `tests/api.spec.ts`      | Ping, the admin's role, the licence, membership, a post's create, edit, reaction and delete, a password reset email in Inbucket, and Inbucket refusing a request without the mail token                                   |
 | `tests/services.spec.ts` | Each requested service: MinIO stores and serves an upload; the server's Elasticsearch and LDAP connection tests pass; Keycloak serves the SAML realm the server is pointed at. Skipped when the service was not requested |
 | `tests/ui.spec.ts`       | Login refusing a wrong password, and login opening the channel                                                                                                                                                            |
+| `scripts/aws-role.sh`    | Run by create and destroy: the account a job runs in (the run's recorded one, or the `account` input) and its CI role                                                                                                     |
 | `scripts/gh-api.sh`      | Run by the workflows for GitHub API calls: retries a server, network or secondary rate-limit error, and prints every attempt's error on one line                                                                          |
 | `scripts/probe-gone.sh`  | Run by the workflows after destroy: each site, its `mail-` host, and its `sso-` host when Keycloak was requested, must get the router's 404 for a test server that no longer exists, each within 3 minutes                |
 
