@@ -5,6 +5,11 @@ rules:
   empty-lines: disable
   line-length: disable
   trailing-spaces: disable
+  # The mobile shard workflows copy mattermost-mobile's steps as they are, with one space before a comment.
+  comments:
+    ignore: |
+      .github/workflows/e2e-test-stack-mobile-android-shard.yml
+      .github/workflows/e2e-test-stack-mobile-ios-shard.yml
   # GitHub Actions' `on:` key is not a boolean.
   truthy:
     check-keys: false
