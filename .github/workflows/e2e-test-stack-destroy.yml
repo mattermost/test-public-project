@@ -9,7 +9,10 @@ name: E2E Test Stack - Destroy
 # servers still up, destroys and checks; a batch already gone (reaped at its TTL,
 # or destroyed before) has no logs, is "not found", and passes.
 #
-# The CI role trusts only jobs in this file and e2e-test-stack-create.yml, on master.
+# It runs in the account the batch was created in, which create records beside
+# the create response; by hand, the account input names it for a run that
+# recorded none (runs before the account input). The account's CI role trusts
+# only jobs in this file and e2e-test-stack-create.yml, on master.
 
 on:
   workflow_call:
@@ -46,6 +49,12 @@ on:
         type: choice
         options: ["v1", "edge"]
         default: "v1"
+      account:
+        description: "AWS account of the batch: as the run recorded, or for a run that recorded none, prod or dev"
+        required: false
+        type: choice
+        options: ["recorded", "prod", "dev"]
+        default: "recorded"
 
 permissions:
   actions: read
@@ -115,10 +124,20 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
 
+      # The CI role of the account the batch's create recorded beside its response.
+      - name: ci/role
+        id: role
+        env:
+          ACCOUNT: ${{ inputs.account }}
+          ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
+          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+        run: e2e-test-stack/scripts/aws-role.sh
+
       - name: ci/configure-aws-credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: us-east-1
 
       # A batch reaped at its TTL, or destroyed before, has no servers to read logs from.
@@ -164,6 +183,12 @@ jobs:
         index: ${{ fromJSON(inputs.run_id != '' && needs.run.outputs.indexes || inputs.indexes) }}
     name: logs (server ${{ matrix.index }})
     steps:
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: e2e-test-stack/scripts
+
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
@@ -188,10 +213,20 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
 
+      # The CI role of the account the batch's create recorded beside its response.
+      - name: ci/role
+        id: role
+        env:
+          ACCOUNT: ${{ inputs.account }}
+          ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
+          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+        run: e2e-test-stack/scripts/aws-role.sh
+
       - name: ci/configure-aws-credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: us-east-1
 
       - name: ci/logs
@@ -276,10 +311,20 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/create
 
+      # The CI role of the account the batch's create recorded beside its response.
+      - name: ci/role
+        id: role
+        env:
+          ACCOUNT: ${{ inputs.account }}
+          ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
+          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+        run: e2e-test-stack/scripts/aws-role.sh
+
       - name: ci/configure-aws-credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: us-east-1
 
       - name: ci/destroy

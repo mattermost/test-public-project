@@ -28,6 +28,12 @@ on:
       - e2e-test-stack/**
   workflow_dispatch:
     inputs:
+      account:
+        description: "AWS account whose control plane runs the batch"
+        required: false
+        type: choice
+        options: ["prod", "dev"]
+        default: "prod"
       channel:
         description: "Control plane channel"
         required: false
@@ -94,6 +100,11 @@ on:
   # Called by e2e-test-stack-run-services.yml, with the same inputs.
   workflow_call:
     inputs:
+      account:
+        description: "AWS account whose control plane runs the batch: prod or dev"
+        required: false
+        type: string
+        default: "prod"
       channel:
         description: "Control plane channel"
         required: false
@@ -178,6 +189,7 @@ jobs:
     # A push has no inputs, so each choice falls back to the dispatch default. A
     # dispatch's empty licence runs unlicensed; a push runs licensed.
     with:
+      account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel || 'v1' }}
       server_image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
       count: ${{ inputs.count || '3' }}

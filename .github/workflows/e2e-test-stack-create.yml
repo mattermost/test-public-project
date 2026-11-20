@@ -7,13 +7,20 @@ name: E2E Test Stack - Create
 # server's credentials from it, and e2e-test-stack-destroy.yml destroys the batch
 # with it.
 #
-# The CI role trusts only jobs in this file and e2e-test-stack-destroy.yml, on
+# It runs as the account input's CI role, MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD or
+# _DEV, which trusts only jobs in this file and e2e-test-stack-destroy.yml, on
 # master. A called workflow's jobs carry its file as job_workflow_ref and the
-# caller's branch as subject, so the role trusts them.
+# caller's branch as subject, so the role trusts them. The create response
+# artifact also holds the account, as e2e-test-stack-account, for a destroy by
+# hand.
 
 on:
   workflow_call:
     inputs:
+      account:
+        description: "AWS account whose control plane creates the batch: prod or dev"
+        type: string
+        default: "prod"
       channel:
         description: "Control plane channel: v1 or edge"
         type: string
@@ -83,6 +90,7 @@ permissions:
   id-token: write
 
 env:
+  ACCOUNT: ${{ inputs.account }}
   CALLER_KEY: test-public-project
   CHANNEL: ${{ inputs.channel }}
   LICENSE: ${{ inputs.license }}
@@ -98,7 +106,6 @@ jobs:
       license: ${{ inputs.license }}
     steps:
       - name: ci/checkout
-        if: github.run_attempt > 1
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
@@ -110,10 +117,21 @@ jobs:
           node-version: "26"
           package-manager-cache: false
 
+      # The account's CI role; the account is recorded beside the create response, for a destroy by hand.
+      - name: ci/role
+        id: role
+        env:
+          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+        run: |
+          set -euo pipefail
+          e2e-test-stack/scripts/aws-role.sh
+          sed -n 's/^account=//p' "$GITHUB_OUTPUT" | tail -1 > "${RUNNER_TEMP}/e2e-test-stack-account"
+
       - name: ci/configure-aws-credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN }}
+          role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: us-east-1
 
       # A re-run of this job (re-run all jobs, or of a failed create) would leave the earlier attempt's batch
@@ -198,7 +216,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-test-stack-create
-          path: ${{ steps.create.outputs.response-path }}
+          path: |
+            ${{ steps.create.outputs.response-path }}
+            ${{ runner.temp }}/e2e-test-stack-account
           if-no-files-found: error
           # A re-run creates a new batch; its response replaces the earlier attempt's, whose batch was destroyed above.
           overwrite: true

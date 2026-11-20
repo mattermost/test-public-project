@@ -47,6 +47,12 @@ on:
         required: false
         type: string
         default: "1"
+      account:
+        description: "AWS account whose control plane runs the batch"
+        required: false
+        type: choice
+        options: ["prod", "dev"]
+        default: "prod"
       channel:
         description: "Control plane channel"
         required: false
@@ -395,6 +401,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-create.yml
     with:
+      account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel }}
       server_image: ${{ needs.resolve.outputs.server_image }}
       count: ${{ needs.plan.outputs.count }}

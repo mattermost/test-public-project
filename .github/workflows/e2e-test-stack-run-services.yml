@@ -15,6 +15,12 @@ on:
       - e2e-test-stack/**
   workflow_dispatch:
     inputs:
+      account:
+        description: "AWS account whose control plane runs the batch"
+        required: false
+        type: choice
+        options: ["prod", "dev"]
+        default: "prod"
       channel:
         description: "Control plane channel"
         required: false
@@ -49,6 +55,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-run.yml
     with:
+      account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel || 'v1' }}
       server_image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
       count: ${{ inputs.count || '3' }}
