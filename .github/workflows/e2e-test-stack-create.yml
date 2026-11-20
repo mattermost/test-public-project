@@ -97,6 +97,13 @@ jobs:
       indexes: ${{ steps.indexes.outputs.indexes }}
       license: ${{ inputs.license }}
     steps:
+      - name: ci/checkout
+        if: github.run_attempt > 1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: e2e-test-stack/scripts
+
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
@@ -121,7 +128,11 @@ jobs:
           DIR: ${{ runner.temp }}/earlier
         run: |
           set -euo pipefail
-          count=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=e2e-test-stack-create" --jq .total_count)
+          if ! count=$(e2e-test-stack/scripts/gh-api.sh "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=e2e-test-stack-create" \
+            --jq .total_count 2>&1); then
+            echo "::error::this run's artifacts could not be listed: ${count}"
+            exit 1
+          fi
           if [ "$count" -eq 0 ]; then
             echo "no earlier create response in this run"
             echo "found=false" >> "$GITHUB_OUTPUT"

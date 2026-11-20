@@ -65,6 +65,12 @@ jobs:
     outputs:
       indexes: ${{ steps.indexes.outputs.indexes }}
     steps:
+      - name: ci/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: e2e-test-stack/scripts
+
       # By hand, the run named must be a run of an E2E workflow on master in this
       # repository, so a pull request's artifact of the same name is never read.
       # e2e-test-stack-mobile-ios.yml is the mobile workflow's former name: a batch
@@ -78,8 +84,12 @@ jobs:
             echo "::error::run_id must be a run number, got '${RUN_ID}'"
             exit 1
           fi
-          read -r path branch event repo < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
-            --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv')
+          if ! info=$(e2e-test-stack/scripts/gh-api.sh "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv' 2>&1); then
+            echo "::error::run ${RUN_ID} could not be read: ${info}"
+            exit 1
+          fi
+          IFS=$'\t' read -r path branch event repo <<< "$info"
           case "$path" in
             .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml | \
               .github/workflows/e2e-test-stack-mobile.yml | .github/workflows/e2e-test-stack-mobile-ios.yml) ;;
