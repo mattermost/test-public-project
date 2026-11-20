@@ -645,8 +645,12 @@ jobs:
           if [ -f "${RESULTS}/jest-results.json" ]; then
             if ! names=$(e2e-test-stack/scripts/gh-api.sh --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
               --jq ".artifacts[].name | select(startswith(\"${PLATFORM}-results-${RESULTS_ID}-\"))" 2>&1); then
-              echo "::warning::this run's artifacts could not be listed, so a lone shard's results are not named: ${names}"
-              names=""
+              echo "::warning::this run's artifacts could not be listed: ${names}"
+              # Without the listing, the results are the one planned shard's that has no folder of its own, if
+              # exactly one has none.
+              names=$(for id in $(jq -r '.include[].runId' <<< "$SPECS"); do
+                [ -d "${RESULTS}/${PLATFORM}-results-${RESULTS_ID}-${id}" ] || echo "${PLATFORM}-results-${RESULTS_ID}-${id}"
+              done)
             fi
             if [ "$(grep -c . <<< "$names")" -eq 1 ]; then
               root_id=${names##*-}

@@ -8,7 +8,7 @@
 # it in an ::error:: command, and exits non-zero.
 set -uo pipefail
 
-TRANSIENT='HTTP 5[0-9][0-9]|timed out|timeout|connection (reset|refused)|unexpected EOF|TLS handshake|no such host|i/o'
+TRANSIENT='HTTP 5[0-9][0-9]|timed out|timeout|connection (reset|refused)|unexpected EOF|: EOF|TLS handshake|no such host|i/o'
 THROTTLED='HTTP 429|secondary rate limit'
 
 err=$(mktemp)
