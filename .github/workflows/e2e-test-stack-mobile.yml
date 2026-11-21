@@ -432,7 +432,7 @@ jobs:
         "MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS":"true","MM_EMAILSETTINGS_FEEDBACKEMAIL":"test@example.com",
         "MM_EMAILSETTINGS_REPLYTOADDRESS":"test@example.com"}
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   # As mobile's provision-servers: the shared servers, provisioned once, without the demo plugin, as mobile's shared server is.
   provision-shared:
@@ -467,7 +467,7 @@ jobs:
         uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: open
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ fromJSON(needs.plan.outputs.shared)[0] }}
 
@@ -538,7 +538,7 @@ jobs:
       device_os_version: ${{ matrix.deviceOsVersion }}
       results_id: ${{ needs.generate-specs.outputs.results_id }}
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   shard-android:
     needs: [resolve, app, generate-specs, plan, create, provision-shared]
@@ -567,7 +567,7 @@ jobs:
       results_id: ${{ needs.generate-specs.outputs.results_id }}
       runner: ${{ inputs.android_runner }}
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   # test-public-project: a shard failed or timed out: collect every server's logs and keep the batch, so a re-run of
   # the failed shards uses it.
@@ -589,7 +589,7 @@ jobs:
       lifecycle: true
       logs_only: true
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   # test-public-project: every shard passed, the run was cancelled (also during create, once its response is
   # uploaded), or the create failed partway: destroy from the response; logs and the router's 404 only after a complete create.
@@ -611,7 +611,7 @@ jobs:
       indexes: ${{ needs.create.outputs.indexes }}
       lifecycle: ${{ needs.create.result == 'success' }}
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   # test-public-project: each shard's Jest results, counted, in place of mobile's report job.
   report:

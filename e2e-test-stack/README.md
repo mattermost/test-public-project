@@ -19,10 +19,10 @@ called files. Mobile and desktop follow the same shape: their existing E2E workf
 its test matrix.
 
 Each workflow that creates servers takes an `account` input: `prod`, the default and what a push runs, or `dev`. Create
-assumes that account's CI role, from the repository variable `MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD` or
-`MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV`, and records the account beside the create response. Destroy runs in the account
+assumes that account's CI role, from the repository variable `E2E_TEST_STACK_ROLE_ARN_PROD` or
+`E2E_TEST_STACK_ROLE_ARN_DEV`, and records the account beside the create response. Destroy runs in the account
 the batch recorded; by hand, its `account` input names the account of a run that recorded none. Both accounts register
-the same public key for this repository, so `E2E_STACK_PRIVATE_KEY` opens either's secrets.
+the same public key for this repository, so `E2E_TEST_STACK_CREDENTIALS_KEY` opens either's secrets.
 
 | File                     | What it checks                                                                                                                                                                                                            |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
