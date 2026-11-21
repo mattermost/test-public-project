@@ -8,7 +8,7 @@ name: E2E Test Stack - Run
 #   create   calls e2e-test-stack-create.yml: create, fetch to check, upload
 #            the sealed create response
 #   test     one job per server, here: open that server's credentials from the
-#            create response with the private key (no AWS), run the suite
+#            create response with the credentials key (no AWS), run the suite
 #   destroy  calls e2e-test-stack-destroy.yml: every server's logs, destroy,
 #            the router's 404 for each site and mail host, destroy again
 #
@@ -166,8 +166,8 @@ on:
         type: boolean
         default: false
     secrets:
-      E2E_STACK_PRIVATE_KEY:
-        description: "The repository's X25519 private key, which opens the secrets sealed to it"
+      E2E_TEST_STACK_CREDENTIALS_KEY:
+        description: "The repository's credentials key, which opens the batch's sealed server credentials"
         required: true
 
 # Never cancelled: a create cancelled while it waits leaves its batch running until its TTL.
@@ -202,7 +202,7 @@ jobs:
       wait_for_migrations: ${{ inputs.wait_for_migrations == true }}
       shared_admin_password: ${{ github.event_name != 'workflow_dispatch' || inputs.shared_admin_password }}
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   # No AWS here: each job opens its own server's credentials from the create response.
   test:
@@ -240,7 +240,7 @@ jobs:
         uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: open
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ matrix.index }}
 
@@ -284,4 +284,4 @@ jobs:
       indexes: ${{ needs.create.outputs.indexes }}
       lifecycle: true
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}

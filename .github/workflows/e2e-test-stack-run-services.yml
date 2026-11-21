@@ -64,4 +64,4 @@ jobs:
       license: enterprise-advanced
       keep: ${{ inputs.keep == true }}
     secrets:
-      E2E_STACK_PRIVATE_KEY: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}

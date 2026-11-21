@@ -34,8 +34,8 @@ on:
         type: boolean
         default: false
     secrets:
-      E2E_STACK_PRIVATE_KEY:
-        description: "The repository's X25519 private key, which opens the secrets sealed to it"
+      E2E_TEST_STACK_CREDENTIALS_KEY:
+        description: "The repository's credentials key, which opens the batch's sealed server credentials"
         required: true
   workflow_dispatch:
     inputs:
@@ -130,8 +130,8 @@ jobs:
         env:
           ACCOUNT: ${{ inputs.account }}
           ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
-          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
         run: e2e-test-stack/scripts/aws-role.sh
 
       - name: ci/configure-aws-credentials
@@ -149,7 +149,7 @@ jobs:
           operation: fetch
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
       - name: ci/indexes
@@ -219,8 +219,8 @@ jobs:
         env:
           ACCOUNT: ${{ inputs.account }}
           ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
-          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
         run: e2e-test-stack/scripts/aws-role.sh
 
       - name: ci/configure-aws-credentials
@@ -236,7 +236,7 @@ jobs:
           operation: logs
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ matrix.index }}
           logs-path: ${{ runner.temp }}/e2e-test-stack-server-${{ matrix.index }}.log
@@ -317,8 +317,8 @@ jobs:
         env:
           ACCOUNT: ${{ inputs.account }}
           ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
-          ROLE_PROD: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV }}
+          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
+          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
         run: e2e-test-stack/scripts/aws-role.sh
 
       - name: ci/configure-aws-credentials
@@ -334,7 +334,7 @@ jobs:
           operation: destroy
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
       - name: ci/assert-destroyed
@@ -378,7 +378,7 @@ jobs:
           operation: destroy
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_STACK_PRIVATE_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
       - name: ci/assert-not-found

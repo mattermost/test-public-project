@@ -14,15 +14,15 @@ Playwright checks run against one remote test server from the e2e-test-stack con
 | [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml)                             | Reusable, and run by hand for a batch a run kept: every server's logs, destroy, the router's 404, destroy again                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Yes      |
 
 Each test job opens its own server's credentials from the uploaded create response with the action's `open`, which
-needs the private key but no AWS role. Masked values do not pass between jobs, and the CI role trusts only the two
+needs the credentials key but no AWS role. Masked values do not pass between jobs, and the CI role trusts only the two
 called files. Mobile and desktop follow the same shape: their existing E2E workflow calls their own two files around
 its test matrix.
 
 Each workflow that creates servers takes an `account` input: `prod`, the default and what a push runs, or `dev`. Create
-assumes that account's CI role, from the repository variable `MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD` or
-`MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV`, and records the account beside the create response. Destroy runs in the account
+assumes that account's CI role, from the repository variable `E2E_TEST_STACK_ROLE_ARN_PROD` or
+`E2E_TEST_STACK_ROLE_ARN_DEV`, and records the account beside the create response. Destroy runs in the account
 the batch recorded; by hand, its `account` input names the account of a run that recorded none. Both accounts register
-the same public key for this repository, so `E2E_STACK_PRIVATE_KEY` opens either's secrets.
+the same public key for this repository, so `E2E_TEST_STACK_CREDENTIALS_KEY` opens either's secrets.
 
 | File                     | What it checks                                                                                                                                                                                                            |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -4,7 +4,7 @@
 # The account is the one recorded in ACCOUNT_FILE when that file exists (a run's create records it beside its
 # response), otherwise ACCOUNT: prod or dev. ACCOUNT may also be empty or "recorded", which accepts only a recorded
 # account. A recorded account and a prod or dev ACCOUNT that differ fail. The role is ROLE_PROD or ROLE_DEV, the
-# repository variables MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD and _DEV; an unset one fails rather than fall back to the
+# repository variables E2E_TEST_STACK_ROLE_ARN_PROD and _DEV; an unset one fails rather than fall back to the
 # other account.
 set -euo pipefail
 
@@ -25,8 +25,8 @@ if [ -n "${ACCOUNT_FILE:-}" ] && [ -f "$ACCOUNT_FILE" ]; then
 fi
 
 case "$account" in
-  prod) arn=${ROLE_PROD:-} var=MM_E2E_TEST_STACK_AWS_ROLE_ARN_PROD ;;
-  dev) arn=${ROLE_DEV:-} var=MM_E2E_TEST_STACK_AWS_ROLE_ARN_DEV ;;
+  prod) arn=${ROLE_PROD:-} var=E2E_TEST_STACK_ROLE_ARN_PROD ;;
+  dev) arn=${ROLE_DEV:-} var=E2E_TEST_STACK_ROLE_ARN_DEV ;;
   "")
     if [ -n "${ACCOUNT_FILE:-}" ]; then
       echo "::error::the run recorded no account, as runs before the account input did: set account to prod or dev" >&2
