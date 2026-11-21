@@ -5,19 +5,22 @@ name: E2E Test Stack - Run
 # e2e-test-stack/ against each in a matrix, and destroys the batch, the way an
 # existing E2E workflow uses the stack.
 #
-#   create   calls e2e-test-stack-create.yml: create, fetch to check, upload
-#            the sealed create response
-#   test     one job per server, here: open that server's credentials from the
-#            create response with the credentials key (no AWS), run the suite
-#   destroy  calls e2e-test-stack-destroy.yml: every server's logs, destroy,
-#            the router's 404 for each site and mail host, destroy again
+#   create   calls e2e-test-stack-create.yml: create the batch, check every
+#            server is ready, upload the sealed create response
+#   test     one job per server, here: open that server with the open action
+#            (no AWS), run the suite
+#   destroy  calls e2e-test-stack-destroy.yml: every server's logs, destroy
+#            every attempt's batch, report any host still served, destroy again
 #
 # Only the two called files make AWS calls: the CI role trusts only them. With
-# keep, the batch is left for e2e-test-stack-destroy.yml, run by hand.
+# keep, the batch is left for e2e-test-stack-destroy.yml, run by hand with its
+# batch id and account, from its create summary; only a run started by hand can
+# be destroyed by hand, by whoever started it.
 # e2e-test-stack-run-services.yml calls this workflow with every optional service.
 #
 # Re-run all jobs, not failed jobs: destroy has already released the batch the
-# failed jobs would test. A re-run's instance key carries its attempt number.
+# failed jobs would test. A re-run creates a batch of its own, and destroy
+# releases every attempt's.
 
 on:
   push:
@@ -182,13 +185,14 @@ jobs:
   create:
     # A called workflow gets no more than the caller grants.
     permissions:
-      actions: read
       contents: read
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-create.yml
     # A push has no inputs, so each choice falls back to the dispatch default. A
     # dispatch's empty licence runs unlicensed; a push runs licensed.
     with:
+      # The batch's name in this run; open and destroy name it too.
+      batch: web
       account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel || 'v1' }}
       server_image: ${{ inputs.server_image || 'mattermostdevelopment/mattermost-enterprise-edition:master' }}
@@ -208,6 +212,10 @@ jobs:
   test:
     needs: create
     runs-on: ubuntu-24.04
+    # actions: read for the open action, which reads this run's artifacts.
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -229,20 +237,14 @@ jobs:
           cache: npm
           cache-dependency-path: e2e-test-stack/package-lock.json
 
-      - name: ci/download-create-response
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
       - name: ci/open-server
         id: server
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack/open@e2e-test-stack-split/logs  # toolkit #25-#30; main once they merge
         with:
-          operation: open
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+          caller-key: test-public-project
+          batch: web
           index: ${{ matrix.index }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
       - name: ci/install
         run: |
@@ -271,17 +273,18 @@ jobs:
 
   destroy:
     needs: [create, test]
-    # Whenever create ran, even if it failed partway: destroy reads the batch from the uploaded response.
-    if: always() && needs.create.result != 'skipped' && needs.create.result != 'cancelled' && inputs.keep != true
-    # actions: read is for a run by hand, which reads another run's artifact.
+    # Whenever create ran, even if it failed partway or was cancelled once its response was uploaded: destroy reads the
+    # batch from the response, and passes when there is none.
+    if: always() && needs.create.result != 'skipped' && inputs.keep != true
+    # What its logs and destroy need: actions: read for the run's artifacts.
     permissions:
       actions: read
       contents: read
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-destroy.yml
     with:
+      batch: web
+      account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel || 'v1' }}
-      indexes: ${{ needs.create.outputs.indexes }}
-      lifecycle: true
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}

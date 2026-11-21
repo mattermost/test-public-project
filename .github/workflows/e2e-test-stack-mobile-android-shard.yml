@@ -13,6 +13,10 @@ name: E2E Test Stack - Mobile Android Shard
 on:
   workflow_call:
     inputs:
+      batch:
+        description: "The run's batch, as create was given it"
+        type: string
+        required: true
       mobile_sha:
         description: "mattermost/mattermost-mobile commit the app was built from"
         type: string
@@ -70,7 +74,7 @@ on:
         description: "The repository's credentials key, which opens the batch's sealed server credentials"
         required: true
 
-# actions: read for the download of this run's app by run id.
+# actions: read for the download of this run's app by run id, and for the open action.
 permissions:
   actions: read
   contents: read
@@ -110,12 +114,6 @@ jobs:
 
       # test-public-project: the shard's own server and the run's shared ones, from the stack, in place of mobile's
       # "Assign test sites by shard role".
-      - name: ci/download-create-response
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
       # The action runs on Node 26; prepare-node-deps below switches to mobile's own version.
       - name: ci/setup-node-for-stack
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
@@ -125,12 +123,12 @@ jobs:
 
       - name: ci/open-servers
         id: server
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack/open@e2e-test-stack-split/logs  # toolkit #25-#30; main once they merge
         with:
-          operation: open
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+          caller-key: test-public-project
+          batch: ${{ inputs.batch }}
           index: ${{ inputs.server_index }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
       # The shard's own server, and the run's shared second and third. One admin password across the batch, as the
       # specs expect one ADMIN_* set.
