@@ -149,7 +149,7 @@ jobs:
           operation: fetch
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
       - name: ci/indexes
@@ -236,7 +236,7 @@ jobs:
           operation: logs
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ matrix.index }}
           logs-path: ${{ runner.temp }}/e2e-test-stack-server-${{ matrix.index }}.log
@@ -334,7 +334,7 @@ jobs:
           operation: destroy
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
       - name: ci/assert-destroyed
@@ -378,7 +378,7 @@ jobs:
           operation: destroy
           caller-key: ${{ env.CALLER_KEY }}
           channel: ${{ inputs.channel }}
-          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
 
       - name: ci/assert-not-found

@@ -14,7 +14,7 @@ Playwright checks run against one remote test server from the e2e-test-stack con
 | [`e2e-test-stack-destroy.yml`](../.github/workflows/e2e-test-stack-destroy.yml)                             | Reusable, and run by hand for a batch a run kept: every server's logs, destroy, the router's 404, destroy again                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Yes      |
 
 Each test job opens its own server's credentials from the uploaded create response with the action's `open`, which
-needs the private key but no AWS role. Masked values do not pass between jobs, and the CI role trusts only the two
+needs the credentials key but no AWS role. Masked values do not pass between jobs, and the CI role trusts only the two
 called files. Mobile and desktop follow the same shape: their existing E2E workflow calls their own two files around
 its test matrix.
 

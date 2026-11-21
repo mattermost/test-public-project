@@ -8,7 +8,7 @@ name: E2E Test Stack - Run
 #   create   calls e2e-test-stack-create.yml: create, fetch to check, upload
 #            the sealed create response
 #   test     one job per server, here: open that server's credentials from the
-#            create response with the private key (no AWS), run the suite
+#            create response with the credentials key (no AWS), run the suite
 #   destroy  calls e2e-test-stack-destroy.yml: every server's logs, destroy,
 #            the router's 404 for each site and mail host, destroy again
 #
@@ -240,7 +240,7 @@ jobs:
         uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: open
-          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ matrix.index }}
 

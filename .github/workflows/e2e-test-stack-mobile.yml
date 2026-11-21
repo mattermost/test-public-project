@@ -164,7 +164,7 @@ jobs:
             exit 1
           fi
           IFS=$'\t' read -r sha branch workflow head_repo <<< "$info"
-          # The shards run this commit's code in a job that holds the repository's private key: only code from
+          # The shards run this commit's code in a job that holds the repository's credentials key: only code from
           # mattermost-mobile itself, never a fork's pull request.
           if [ "$head_repo" != "$MOBILE_REPOSITORY" ]; then
             echo "::error::run ${run_id} built code from ${head_repo}, not ${MOBILE_REPOSITORY}; only its own branches are run"
@@ -467,7 +467,7 @@ jobs:
         uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
         with:
           operation: open
-          private-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
           create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
           index: ${{ fromJSON(needs.plan.outputs.shared)[0] }}
 
