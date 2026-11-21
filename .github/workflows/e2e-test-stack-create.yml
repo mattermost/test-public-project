@@ -1,22 +1,24 @@
 ---
 name: E2E Test Stack - Create
 
-# Creates the batch for an E2E Test Stack - Run, and fetches it by batch id and
-# token to check every server came up. Uploads the create response, whose
-# secrets are sealed to this repository's key: the run's test jobs open their
-# server's credentials from it, and e2e-test-stack-destroy.yml destroys the batch
-# with it.
+# Creates the batch for an E2E workflow with the toolkit's create action, which
+# checks every server is ready and uploads the create response, whose secrets
+# are sealed to this repository's key. The run's test jobs open their server
+# from it with the open action; e2e-test-stack-destroy.yml collects the logs
+# and destroys every attempt's batch of the run.
 #
 # It runs as the account input's CI role, E2E_TEST_STACK_ROLE_ARN_PROD or
 # _DEV, which trusts only jobs in this file and e2e-test-stack-destroy.yml, on
 # master. A called workflow's jobs carry its file as job_workflow_ref and the
-# caller's branch as subject, so the role trusts them. The create response
-# artifact also holds the account, as e2e-test-stack-account, for a destroy by
-# hand.
+# caller's branch as subject, so the role trusts them.
 
 on:
   workflow_call:
     inputs:
+      batch:
+        description: "The batch within the run, 1-20 lowercase letters, digits and hyphens: the open, logs and destroy steps name it too"
+        type: string
+        required: true
       account:
         description: "AWS account whose control plane creates the batch: prod or dev"
         type: string
@@ -70,7 +72,7 @@ on:
         description: "The batch's id"
         value: ${{ jobs.create.outputs.batch-id }}
       indexes:
-        description: "JSON array of the servers' indexes, one test job each"
+        description: "JSON array of the servers' indexes, one test job each; empty unless every server is ready"
         value: ${{ jobs.create.outputs.indexes }}
       sites:
         description: "JSON array of the servers' site URLs, index-aligned"
@@ -78,23 +80,17 @@ on:
       license:
         description: "The licence SKU the batch was created with; empty when unlicensed"
         value: ${{ jobs.create.outputs.license }}
+      server-image:
+        description: "The image the batch runs, with master, latest or esr resolved"
+        value: ${{ jobs.create.outputs.server-image }}
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY:
         description: "The repository's credentials key, which opens the batch's sealed server credentials"
         required: true
 
-# actions: read to find an earlier attempt's create response in this run.
 permissions:
-  actions: read
   contents: read
   id-token: write
-
-env:
-  ACCOUNT: ${{ inputs.account }}
-  CALLER_KEY: test-public-project
-  CHANNEL: ${{ inputs.channel }}
-  LICENSE: ${{ inputs.license }}
-  RESPONSE_FILE: e2e-test-stack-create.json
 
 jobs:
   create:
@@ -102,174 +98,46 @@ jobs:
     outputs:
       batch-id: ${{ steps.create.outputs.batch-id }}
       sites: ${{ steps.create.outputs.sites }}
-      indexes: ${{ steps.indexes.outputs.indexes }}
+      indexes: ${{ steps.create.outputs.indexes }}
       license: ${{ inputs.license }}
+      server-image: ${{ steps.create.outputs.server-image }}
     steps:
-      - name: ci/checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: e2e-test-stack/scripts
-
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "26"
           package-manager-cache: false
 
-      # The account's CI role; the account is recorded beside the create response, for a destroy by hand.
-      - name: ci/role
-        id: role
-        env:
-          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
-        run: |
-          set -euo pipefail
-          e2e-test-stack/scripts/aws-role.sh
-          sed -n 's/^account=//p' "$GITHUB_OUTPUT" | tail -1 > "${RUNNER_TEMP}/e2e-test-stack-account"
-
-      - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ steps.role.outputs.arn }}
-          aws-region: us-east-1
-
-      # A re-run of this job (re-run all jobs, or of a failed create) would leave the earlier attempt's batch
-      # running, and overwrite the response that names it: destroy it first. No earlier response: nothing to do. An
-      # earlier response that can't be downloaded stops the create rather than lose that batch.
-      - name: ci/find-earlier-response
-        id: earlier
-        if: github.run_attempt > 1
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-          DIR: ${{ runner.temp }}/earlier
-        run: |
-          set -euo pipefail
-          if ! count=$(e2e-test-stack/scripts/gh-api.sh "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=e2e-test-stack-create" \
-            --jq .total_count 2>&1); then
-            echo "::error::this run's artifacts could not be listed: ${count}"
-            exit 1
-          fi
-          if [ "$count" -eq 0 ]; then
-            echo "no earlier create response in this run"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          for attempt in 1 2 3; do
-            rm -rf "$DIR"
-            if gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" -n e2e-test-stack-create -D "$DIR" && [ -s "$DIR/${RESPONSE_FILE}" ]; then
-              echo "found=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            sleep $((attempt * 10))
-          done
-          echo "::error::the earlier attempt's create response exists but could not be downloaded; not creating another batch"
-          exit 1
-
-      - name: ci/destroy-earlier-batch
-        id: destroy-earlier
-        if: steps.earlier.outputs.found == 'true'
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
-        with:
-          operation: destroy
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/earlier/${{ env.RESPONSE_FILE }}
-
-      - name: ci/assert-earlier-destroyed
-        if: steps.destroy-earlier.outcome == 'success'
-        env:
-          STATE: ${{ steps.destroy-earlier.outputs.state }}
-        run: |
-          case "$STATE" in
-            destroyed | "not found") echo "earlier attempt's batch: ${STATE}" ;;
-            *) echo "::error::the earlier attempt's batch says state '${STATE}', want destroyed"; exit 1 ;;
-          esac
-
       - name: ci/create
         id: create
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack/create@e2e-test-stack-split/logs  # toolkit #25-#30; main once they merge
         with:
-          operation: create
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
+          caller-key: test-public-project
+          batch: ${{ inputs.batch }}
+          # Empty, and refused, for an account that is neither or whose variable is unset.
+          role-arn: ${{ inputs.account == 'dev' && vars.E2E_TEST_STACK_ROLE_ARN_DEV || inputs.account == 'prod' && vars.E2E_TEST_STACK_ROLE_ARN_PROD || '' }}
+          channel: ${{ inputs.channel }}
           credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          # The run id, unique across this repository's workflows; run numbers count per workflow.
-          instance-key: tpp-${{ github.run_id }}-${{ github.run_attempt }}
           server-image: ${{ inputs.server_image }}
           count: ${{ inputs.count }}
           services: ${{ inputs.services }}
           ttl: ${{ inputs.ttl }}
           os: ${{ inputs.os }}
           postgres: ${{ inputs.postgres }}
-          license: ${{ env.LICENSE }}
+          license: ${{ inputs.license }}
           server-env: ${{ inputs.server_env }}
           wait-for-migrations: ${{ inputs.wait_for_migrations }}
           shared-admin-password: ${{ inputs.shared_admin_password }}
-          response-path: ${{ runner.temp }}/${{ env.RESPONSE_FILE }}
 
-      # Its secrets are sealed to this repository's key, so it is safe to upload from a public repository.
-      - name: ci/upload-create-response
-        if: always() && steps.create.outputs.response-path != ''
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: e2e-test-stack-create
-          path: |
-            ${{ steps.create.outputs.response-path }}
-            ${{ runner.temp }}/e2e-test-stack-account
-          if-no-files-found: error
-          # A re-run creates a new batch; its response replaces the earlier attempt's, whose batch was destroyed above.
-          overwrite: true
-
-      - name: ci/fetch-batch
-        id: fetch
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
-        with:
-          operation: fetch
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ env.CHANNEL }}
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          batch-id: ${{ steps.create.outputs.batch-id }}
-          batch-token: ${{ steps.create.outputs.batch-token }}
-
-      - name: ci/assert-batch
-        id: indexes
-        env:
-          CREATED: ${{ steps.create.outputs.state }}
-          STATE: ${{ steps.fetch.outputs.state }}
-          READY: ${{ steps.fetch.outputs.ready }}
-          WANT: ${{ inputs.count }}
-        run: |
-          set -euo pipefail
-          if [ "$CREATED" != ready ]; then
-            echo "::error::create says state '${CREATED}', want ready"
-            exit 1
-          fi
-          # fetch rebuilds the batch from its live instances and reports it as "found"; ready counts those ready.
-          if [ "$STATE" != found ] || [ "$READY" != "$WANT" ]; then
-            echo "::error::fetch says state '${STATE}' with ${READY} of ${WANT} ready, want found with ${WANT}"
-            exit 1
-          fi
-          echo "indexes=$(jq -nc --argjson n "$WANT" '[range($n)]')" >> "$GITHUB_OUTPUT"
-
+      # A destroy by hand names the account; nothing else records it.
       - name: ci/summary
         if: always() && steps.create.outputs.batch-id != ''
         env:
+          ACCOUNT: ${{ inputs.account }}
           BATCH_ID: ${{ steps.create.outputs.batch-id }}
-          VERSION: ${{ steps.create.outputs.deployment-version }}
-          READY: ${{ steps.fetch.outputs.ready }}
-          SITES: ${{ steps.create.outputs.sites }}
         run: |
           {
-            echo "### Create"
+            echo "### Account"
             echo
-            echo "| Item | Value |"
-            echo "|---|---|"
-            echo "| Batch | \`${BATCH_ID}\` |"
-            echo "| Channel | \`${CHANNEL}\`, version ${VERSION:-unknown} |"
-            echo "| Ready (fetched) | ${READY:-0} |"
-            jq -r 'to_entries[] | "| Site \(.key) | \(.value) |"' <<< "$SITES"
+            echo "Batch \`${BATCH_ID}\` is in the \`${ACCOUNT}\` account: give it to E2E Test Stack - Destroy, run by hand."
           } >> "$GITHUB_STEP_SUMMARY"
-

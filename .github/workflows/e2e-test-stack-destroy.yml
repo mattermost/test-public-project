@@ -1,60 +1,64 @@
 ---
 name: E2E Test Stack - Destroy
 
-# Releases a batch from its create response. An E2E Test Stack - Run calls it
-# after its tests (lifecycle: true): it collects each server's logs, destroys
-# the batch, checks every site and mail host gets the router's 404 for a server
-# that no longer exists, and destroys again expecting "not found". Run by hand
-# with the run id of a run that kept its batch, it collects the logs of the
-# servers still up, destroys and checks; a batch already gone (reaped at its TTL,
-# or destroyed before) has no logs, is "not found", and passes.
+# Collects the logs of a batch's servers still up, then destroys it, with the
+# toolkit's logs and destroy actions. An E2E workflow calls it after its tests
+# with the batch it created: destroy releases every attempt's batch of the run,
+# reports any site, mail or SSO host the router still serves after 30 seconds,
+# and destroys again expecting "not found".
 #
-# It runs in the account the batch was created in, which create records beside
-# the create response; by hand, the account input names it for a run that
-# recorded none (runs before the account input). The account's CI role trusts
-# only jobs in this file and e2e-test-stack-create.yml, on master.
+# By hand, it takes one batch id and its account, from a run's create summary.
+# In another account the batch is not found, and the run passes with the batch
+# still up: give the account the summary names. Another run's
+# batch is collected and destroyed only when that run was started by hand, by
+# the same person, and has completed; any other batch is left to its run's own
+# destroy, or to the reaper at its TTL. A batch already gone has no logs, is
+# "not found", and passes.
+#
+# It runs as the account input's CI role, which trusts only jobs in this file
+# and e2e-test-stack-create.yml, on master.
 
 on:
   workflow_call:
     inputs:
+      batch:
+        description: "The batch within the run, as create was given it"
+        type: string
+        required: true
+      account:
+        description: "AWS account the batch was created in: prod or dev"
+        type: string
+        default: "prod"
       channel:
         description: "Control plane channel the batch was created on: v1 or edge"
         type: string
         default: "v1"
-      indexes:
-        description: "JSON array of the servers whose logs to collect, from create; empty collects none"
-        type: string
-        default: ""
-      lifecycle:
-        description: "Called after a run's tests: collect the servers' logs, and require the batch to be destroyed"
-        type: boolean
-        default: false
       logs_only:
         description: "Collect the logs and leave the batch up, for a re-run of failed tests"
         type: boolean
         default: false
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY:
-        description: "The repository's credentials key, which opens the batch's sealed server credentials"
+        description: "The repository's credentials key, which opens the batch's sealed token"
         required: true
   workflow_dispatch:
     inputs:
-      run_id:
-        description: "The E2E Test Stack - Run, Run with services, or Mobile workflow run that created the batch (the number in its URL)"
+      batch_id:
+        description: "The batch to destroy, from its run's create summary, e.g. test-public-project-1234-web-1-a1b2c3"
         required: true
         type: string
+      account:
+        description: "AWS account the batch was created in, as its run's create summary says; in another, it is not found and stays up"
+        required: false
+        type: choice
+        options: ["prod", "dev"]
+        default: "prod"
       channel:
         description: "Control plane channel the batch was created on"
         required: false
         type: choice
         options: ["v1", "edge"]
         default: "v1"
-      account:
-        description: "AWS account of the batch: as the run recorded, or for a run that recorded none, prod or dev"
-        required: false
-        type: choice
-        options: ["recorded", "prod", "dev"]
-        default: "recorded"
 
 permissions:
   actions: read
@@ -63,347 +67,68 @@ permissions:
 
 env:
   CALLER_KEY: test-public-project
-  # By hand: the run whose create response to read. Empty when called.
-  RUN_ID: ${{ inputs.run_id }}
+  # Called: the batch, and no id. By hand: the id, and no batch.
+  BATCH: ${{ inputs.batch }}
+  BATCH_ID: ${{ inputs.batch_id }}
+  # Empty, and refused, for an account that is neither or whose variable is unset.
+  ROLE_ARN: ${{ inputs.account == 'dev' && vars.E2E_TEST_STACK_ROLE_ARN_DEV || inputs.account == 'prod' && vars.E2E_TEST_STACK_ROLE_ARN_PROD || '' }}
 
 jobs:
-  # By hand only: checks the run named, and finds which of its servers are still up, for logs.
-  run:
-    if: inputs.run_id != ''
-    runs-on: ubuntu-24.04
-    outputs:
-      indexes: ${{ steps.indexes.outputs.indexes }}
-    steps:
-      - name: ci/checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: e2e-test-stack/scripts
-
-      # By hand, the run named must be a run of an E2E workflow on master in this
-      # repository, so a pull request's artifact of the same name is never read.
-      # e2e-test-stack-mobile-ios.yml is the mobile workflow's former name: a batch
-      # one of its runs kept stays destroyable until its 4-hour TTL ends.
-      - name: ci/check-run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
-            echo "::error::run_id must be a run number, got '${RUN_ID}'"
-            exit 1
-          fi
-          if ! info=$(e2e-test-stack/scripts/gh-api.sh "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
-            --jq '[.path, .head_branch, .event, .head_repository.full_name] | @tsv' 2>&1); then
-            echo "::error::run ${RUN_ID} could not be read: ${info}"
-            exit 1
-          fi
-          IFS=$'\t' read -r path branch event repo <<< "$info"
-          case "$path" in
-            .github/workflows/e2e-test-stack-run.yml | .github/workflows/e2e-test-stack-run-services.yml | \
-              .github/workflows/e2e-test-stack-mobile.yml | .github/workflows/e2e-test-stack-mobile-ios.yml) ;;
-            *) path="not an E2E workflow: ${path}" ;;
-          esac
-          if [[ "$path" == not* ]] || [ "$branch" != master ] ||
-            [ "$repo" != "$GITHUB_REPOSITORY" ] || { [ "$event" != push ] && [ "$event" != workflow_dispatch ]; }; then
-            echo "::error::run ${RUN_ID} is not an E2E Test Stack run on master: ${path} on ${branch} (${event}) from ${repo}"
-            exit 1
-          fi
-
-      - name: ci/setup-node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: "26"
-          package-manager-cache: false
-
-      - name: ci/download-create-response-of-run
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          run-id: ${{ env.RUN_ID }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/create
-
-      # The CI role of the account the batch's create recorded beside its response.
-      - name: ci/role
-        id: role
-        env:
-          ACCOUNT: ${{ inputs.account }}
-          ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
-          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
-        run: e2e-test-stack/scripts/aws-role.sh
-
-      - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ steps.role.outputs.arn }}
-          aws-region: us-east-1
-
-      # A batch reaped at its TTL, or destroyed before, has no servers to read logs from.
-      - name: ci/fetch
-        id: fetch
-        continue-on-error: true
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
-        with:
-          operation: fetch
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ inputs.channel }}
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
-
-      - name: ci/indexes
-        id: indexes
-        env:
-          OUTCOME: ${{ steps.fetch.outcome }}
-          INSTANCES: ${{ steps.fetch.outputs.instances }}
-        run: |
-          set -euo pipefail
-          indexes='[]'
-          if [ "$OUTCOME" = success ] && [ -n "$INSTANCES" ]; then
-            indexes=$(jq -c '[to_entries[] | select(.value != null and .value.state == "ready") | .key]' <<< "$INSTANCES")
-          fi
-          if [ "$indexes" = '[]' ]; then
-            echo "::notice::no server of run ${RUN_ID} is up, so no logs are collected"
-          fi
-          echo "indexes=${indexes}" >> "$GITHUB_OUTPUT"
-
-  # Uploads each server's full log.
   logs:
-    needs: run
-    # Called after a run's tests, or by hand for the servers still up.
-    if: >-
-      always() &&
-      ((inputs.run_id == '' && inputs.lifecycle && inputs.indexes != '' && inputs.indexes != '[]') ||
-      (inputs.run_id != '' && needs.run.result == 'success' && needs.run.outputs.indexes != '[]'))
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        index: ${{ fromJSON(inputs.run_id != '' && needs.run.outputs.indexes || inputs.indexes) }}
-    name: logs (server ${{ matrix.index }})
     steps:
-      - name: ci/checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: e2e-test-stack/scripts
-
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "26"
           package-manager-cache: false
-
-      # Called: this run attempt's own artifact. A token would make the action look it up by run id, which can find
-      # an earlier attempt's.
-      - name: ci/download-create-response
-        if: inputs.run_id == ''
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
-      - name: ci/download-create-response-of-run
-        if: inputs.run_id != ''
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          run-id: ${{ env.RUN_ID }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/create
-
-      # The CI role of the account the batch's create recorded beside its response.
-      - name: ci/role
-        id: role
-        env:
-          ACCOUNT: ${{ inputs.account }}
-          ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
-          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
-        run: e2e-test-stack/scripts/aws-role.sh
-
-      - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ steps.role.outputs.arn }}
-          aws-region: us-east-1
 
       - name: ci/logs
         id: logs
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack/logs@e2e-test-stack-split/logs  # toolkit #25-#30; main once they merge
         with:
-          operation: logs
           caller-key: ${{ env.CALLER_KEY }}
+          batch: ${{ env.BATCH }}
+          batch-id: ${{ env.BATCH_ID }}
+          role-arn: ${{ env.ROLE_ARN }}
           channel: ${{ inputs.channel }}
           credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
-          index: ${{ matrix.index }}
-          logs-path: ${{ runner.temp }}/e2e-test-stack-server-${{ matrix.index }}.log
 
-      # The full log, or the tail when the download failed (the logs step then fails too).
-      - name: ci/upload-logs
-        if: always() && steps.logs.outputs.logs-path != ''
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: e2e-test-stack-logs-${{ matrix.index }}
-          path: ${{ steps.logs.outputs.logs-path }}
-          if-no-files-found: error
-          retention-days: 14
-          # A re-run of failed tests uploads its logs again.
-          overwrite: true
-
+      # Every server whose full log was saved names the containers it ran.
       - name: ci/assert-logs
         env:
-          LOGS_PATH: ${{ steps.logs.outputs.logs-path }}
-          LOGS_FULL: ${{ steps.logs.outputs.logs-full }}
+          SERVERS: ${{ steps.logs.outputs.servers }}
         run: |
           set -euo pipefail
-          if [ -z "$LOGS_PATH" ] || [ ! -s "$LOGS_PATH" ]; then
-            echo "::error::logs wrote no log"
+          if [ -z "$SERVERS" ] || [ "$SERVERS" = '[]' ]; then
+            echo "no server is up, so no logs were collected"
+            exit 0
+          fi
+          bad=$(jq -r '[.[] | select(.full and (.containers | length) == 0) | .index] | join(", ")' <<< "$SERVERS")
+          if [ -n "$bad" ]; then
+            echo "::error::the log of server(s) ${bad} names no container"
             exit 1
           fi
-          if [ "$LOGS_FULL" != "true" ]; then
-            echo "::error::logs wrote only a truncated tail, not the full log"
-            exit 1
-          fi
-          # The agent heads each container's output with "===== <container> =====".
-          if ! grep -q '^===== .* =====$' "$LOGS_PATH"; then
-            echo "::error::the log names no container"
-            exit 1
-          fi
-          echo "  $(wc -l < "$LOGS_PATH") line(s): $(grep '^===== .* =====$' "$LOGS_PATH" | tr -d '=' | xargs)"
+          jq -r '.[] | "  server \(.index): \(.containers | join(" "))"' <<< "$SERVERS"
 
-  # Depends on nothing but the create response, so a failed logs job never keeps the batch alive. By hand, only
-  # after the run named passed its check.
+  # A failed logs job never keeps the batch up.
   destroy:
-    needs: [run, logs]
-    if: always() && !inputs.logs_only && (inputs.run_id == '' || needs.run.result == 'success')
+    needs: logs
+    if: always() && !inputs.logs_only
     runs-on: ubuntu-24.04
     steps:
-      - name: ci/checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: e2e-test-stack/scripts
-
       - name: ci/setup-node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "26"
           package-manager-cache: false
 
-      # Called: this run attempt's own artifact. A token would make the action look it up by run id, which can find
-      # an earlier attempt's.
-      - name: ci/download-create-response
-        if: inputs.run_id == ''
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
-      - name: ci/download-create-response-of-run
-        if: inputs.run_id != ''
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          run-id: ${{ env.RUN_ID }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/create
-
-      # The CI role of the account the batch's create recorded beside its response.
-      - name: ci/role
-        id: role
-        env:
-          ACCOUNT: ${{ inputs.account }}
-          ACCOUNT_FILE: ${{ runner.temp }}/create/e2e-test-stack-account
-          ROLE_PROD: ${{ vars.E2E_TEST_STACK_ROLE_ARN_PROD }}
-          ROLE_DEV: ${{ vars.E2E_TEST_STACK_ROLE_ARN_DEV }}
-        run: e2e-test-stack/scripts/aws-role.sh
-
-      - name: ci/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
-        with:
-          role-to-assume: ${{ steps.role.outputs.arn }}
-          aws-region: us-east-1
-
       - name: ci/destroy
-        id: destroy
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack/destroy@e2e-test-stack-split/logs  # toolkit #25-#30; main once they merge
         with:
-          operation: destroy
           caller-key: ${{ env.CALLER_KEY }}
+          batch: ${{ env.BATCH }}
+          batch-id: ${{ env.BATCH_ID }}
+          role-arn: ${{ env.ROLE_ARN }}
           channel: ${{ inputs.channel }}
           credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
-
-      - name: ci/assert-destroyed
-        env:
-          STATE: ${{ steps.destroy.outputs.state }}
-          LIFECYCLE: ${{ inputs.lifecycle }}
-        run: |
-          case "$STATE" in
-            destroyed) ;;
-            "not found")
-              if [ "$LIFECYCLE" = true ]; then
-                echo "::error::destroy says 'not found' for the batch this run created"
-                exit 1
-              fi
-              echo "already gone"
-              ;;
-            *)
-              echo "::error::destroy says state '${STATE}', want destroyed"
-              exit 1
-              ;;
-          esac
-
-      # A batch whose every instance failed has no site to check.
-      - name: ci/probe-gone
-        id: probe-gone
-        if: steps.destroy.outputs.state == 'destroyed' && contains(steps.destroy.outputs.sites, '://')
-        env:
-          SITES: ${{ steps.destroy.outputs.sites }}
-        run: |
-          set -euo pipefail
-          # Keycloak's sso- host, for each server created with it.
-          SSO_HOSTS=$(jq -c '[.batch.instances[]? | .sso_host? // empty]' "${RUNNER_TEMP}/create/e2e-test-stack-create.json")
-          export SSO_HOSTS
-          e2e-test-stack/scripts/probe-gone.sh
-
-      - name: ci/destroy-again
-        id: again
-        if: inputs.lifecycle
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
-        with:
-          operation: destroy
-          caller-key: ${{ env.CALLER_KEY }}
-          channel: ${{ inputs.channel }}
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
-
-      - name: ci/assert-not-found
-        if: inputs.lifecycle
-        env:
-          STATE: ${{ steps.again.outputs.state }}
-        run: |
-          if [ "$STATE" != "not found" ]; then
-            echo "::error::a second destroy says state '${STATE}', want 'not found'"
-            exit 1
-          fi
-
-      - name: ci/summary
-        if: always()
-        env:
-          STATE: ${{ steps.destroy.outputs.state }}
-          GONE: ${{ steps.probe-gone.outcome }}
-          AGAIN: ${{ steps.again.outputs.state }}
-        run: |
-          {
-            echo "### Destroy"
-            echo
-            echo "| Check | Result |"
-            echo "|---|---|"
-            echo "| Destroy | ${STATE:-not run} |"
-            echo "| Sites, mail and SSO hosts gone | ${GONE:-not run} |"
-            echo "| Destroy again | ${AGAIN:-not run} |"
-          } >> "$GITHUB_STEP_SUMMARY"

@@ -396,11 +396,12 @@ jobs:
   create:
     needs: [resolve, plan]
     permissions:
-      actions: read
       contents: read
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-create.yml
     with:
+      # The batch's name in this run, ios or android; the shards, logs and destroy name it too.
+      batch: ${{ needs.resolve.outputs.platform }}
       account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel }}
       server_image: ${{ needs.resolve.outputs.server_image }}
@@ -439,6 +440,10 @@ jobs:
     needs: [resolve, plan, create]
     if: needs.plan.outputs.shared != '[]'
     runs-on: ubuntu-24.04
+    # actions: read for the open action, which reads this run's artifacts.
+    permissions:
+      actions: read
+      contents: read
     outputs:
       site_2_url: ${{ steps.urls.outputs.site_2_url }}
       site_3_url: ${{ steps.urls.outputs.site_3_url }}
@@ -450,12 +455,6 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
 
-      - name: ci/download-create-response
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
-        with:
-          name: e2e-test-stack-create
-          path: ${{ runner.temp }}/create
-
       - name: ci/setup-node-for-stack
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
@@ -464,12 +463,12 @@ jobs:
 
       - name: ci/open-shared
         id: server
-        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack@e2e-test-stack  # toolkit #21 branch; main once it merges
+        uses: mattermost/mattermost-test-automation-toolkit/actions/e2e-test-stack/open@e2e-test-stack-split/logs  # toolkit #25-#30; main once they merge
         with:
-          operation: open
-          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-          create-response: ${{ runner.temp }}/create/e2e-test-stack-create.json
+          caller-key: test-public-project
+          batch: ${{ needs.resolve.outputs.platform }}
           index: ${{ fromJSON(needs.plan.outputs.shared)[0] }}
+          credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
       - name: ci/shared-urls
         id: urls
@@ -521,12 +520,13 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
     name: shard ${{ matrix.runId }}
-    # actions: read for the shards' download of this run's app by run id.
+    # actions: read for the shards' download of this run's app by run id, and their open action.
     permissions:
       actions: read
       contents: read
     uses: ./.github/workflows/e2e-test-stack-mobile-ios-shard.yml
     with:
+      batch: ${{ needs.resolve.outputs.platform }}
       mobile_sha: ${{ needs.resolve.outputs.sha }}
       run_id: ${{ matrix.runId }}
       server_index: ${{ matrix.serverIndex }}
@@ -549,12 +549,13 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
     name: shard ${{ matrix.runId }}
-    # actions: read for the shards' download of this run's app by run id.
+    # actions: read for the shards' download of this run's app by run id, and their open action.
     permissions:
       actions: read
       contents: read
     uses: ./.github/workflows/e2e-test-stack-mobile-android-shard.yml
     with:
+      batch: ${{ needs.resolve.outputs.platform }}
       mobile_sha: ${{ needs.resolve.outputs.sha }}
       run_id: ${{ matrix.runId }}
       server_index: ${{ matrix.serverIndex }}
@@ -572,7 +573,7 @@ jobs:
   # test-public-project: a shard failed or timed out: collect every server's logs and keep the batch, so a re-run of
   # the failed shards uses it.
   logs:
-    needs: [plan, create, shard-ios, shard-android]
+    needs: [resolve, plan, create, shard-ios, shard-android]
     if: >-
       always() && needs.create.result == 'success'
       && !cancelled()
@@ -584,17 +585,17 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-destroy.yml
     with:
+      batch: ${{ needs.resolve.outputs.platform }}
+      account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel }}
-      indexes: ${{ needs.create.outputs.indexes }}
-      lifecycle: true
       logs_only: true
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
   # test-public-project: every shard passed, the run was cancelled (also during create, once its response is
-  # uploaded), or the create failed partway: destroy from the response; logs and the router's 404 only after a complete create.
+  # uploaded), or the create failed partway: collect the logs of any server up, and destroy every attempt's batch.
   destroy:
-    needs: [plan, create, shard-ios, shard-android]
+    needs: [resolve, plan, create, shard-ios, shard-android]
     if: >-
       always() && needs.create.result != 'skipped'
       && (cancelled()
@@ -607,9 +608,9 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-test-stack-destroy.yml
     with:
+      batch: ${{ needs.resolve.outputs.platform }}
+      account: ${{ inputs.account || 'prod' }}
       channel: ${{ inputs.channel }}
-      indexes: ${{ needs.create.outputs.indexes }}
-      lifecycle: ${{ needs.create.result == 'success' }}
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
