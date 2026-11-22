@@ -429,12 +429,12 @@ jobs:
       # The webhook sidecar the mm_blocks specs call back to, at http://webhook:3000 inside each server; only when the
       # run has mm_blocks specs.
       services: ${{ needs.plan.outputs.services }}
-      # mobile's E2E server settings, one per line, sorted by name: Shared Channels on from the start, and email on,
-      # which the stack leaves off.
+      # mobile's E2E server settings, one per line, sorted by name, with email on, which the stack leaves off. Not
+      # EnableSharedChannels: a setting in the environment cannot be changed through the config API, and mobile's specs
+      # turn it off and on. Provisioning turns it on.
       server_env: |-
         {
           "MM_CONNECTEDWORKSPACESSETTINGS_ENABLEREMOTECLUSTERSERVICE": "true",
-          "MM_CONNECTEDWORKSPACESSETTINGS_ENABLESHAREDCHANNELS": "true",
           "MM_EMAILSETTINGS_FEEDBACKEMAIL": "test@example.com",
           "MM_EMAILSETTINGS_REPLYTOADDRESS": "test@example.com",
           "MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS": "true",
