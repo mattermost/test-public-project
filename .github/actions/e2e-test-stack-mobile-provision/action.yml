@@ -88,10 +88,16 @@ runs:
       run: |
         node -e '
           const fs = require("fs");
-          const env = "detox/provision/env.ts";
-          if (!fs.existsSync(env) || !fs.readFileSync(env, "utf8").includes("E2E_SERVER_SOURCE")) {
-            console.error("::error::this build\x27s mobile code does not read E2E_SERVER_SOURCE, so it would download Agents and Calls; use a newer build");
-            process.exit(1);
+          // Mobile must read E2E_SERVER_SOURCE and, for e2e-test-stack, enable the prepackaged plugins.
+          const reads = [
+            ["detox/provision/env.ts", /\benv\.E2E_SERVER_SOURCE\b/],
+            ["detox/provision/provision.ts", /\bif \(e2eTestStack && plugin\.prepackaged\)/],
+          ];
+          for (const [file, pattern] of reads) {
+            if (!fs.existsSync(file) || !pattern.test(fs.readFileSync(file, "utf8"))) {
+              console.error(`::error::this build\x27s mobile code does not act on E2E_SERVER_SOURCE (${file} does not match ${pattern}), so it would download Agents and Calls; use a newer build`);
+              process.exit(1);
+            }
           }
           const edits = [
             ["detox/shared/server-baseline.ts", /^[ \t]*\x27ServiceSettings\.AllowedUntrustedInternalConnections\x27:.*\n/m, ""],
