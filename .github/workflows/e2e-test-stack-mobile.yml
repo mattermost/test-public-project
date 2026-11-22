@@ -429,8 +429,9 @@ jobs:
       # The webhook sidecar the mm_blocks specs call back to, at http://webhook:3000 inside each server; only when the
       # run has mm_blocks specs.
       services: ${{ needs.plan.outputs.services }}
-      # mobile's E2E server settings, one per line, sorted by name: Shared Channels on from the start, and email on,
-      # which the stack leaves off.
+      # mobile's E2E server settings, one per line, sorted by name, with email on, which the stack leaves off. The two
+      # ConnectedWorkspacesSettings are set at boot: the server starts its shared-channel service only at startup. Set
+      # here, they cannot be switched off through the config API.
       server_env: |-
         {
           "MM_CONNECTEDWORKSPACESSETTINGS_ENABLEREMOTECLUSTERSERVICE": "true",
