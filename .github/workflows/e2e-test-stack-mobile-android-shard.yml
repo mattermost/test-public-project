@@ -41,6 +41,10 @@ on:
         description: "The shard's space-separated spec files"
         type: string
         required: true
+      webhook:
+        description: "The batch has the webhook sidecar, for mm_blocks specs"
+        type: boolean
+        default: false
       role:
         description: "pool or mutation"
         type: string
@@ -93,6 +97,11 @@ jobs:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
       # test-public-project: mobile's template sets these at its top; ADMIN_* and SITE_* come from the open step.
+      # The batch's webhook sidecar, when it has one, which the server calls inside the instance. The runner cannot
+      # reach it, so the mm_blocks specs skip their check from the runner; create reports ready only once the sidecar is
+      # configured. Empty without one, so the mm_blocks specs skip the tests that need it.
+      WEBHOOK_BASE_URL: ${{ inputs.webhook && 'http://webhook:3000' || '' }}
+      WEBHOOK_SIDECAR: ${{ inputs.webhook && 'e2e-test-stack' || '' }}
       IOS: "false"
       RUNNING_E2E: "true"
       HEADLESS: "true"
@@ -358,16 +367,6 @@ jobs:
           restore-keys: |
             android-emulator-${{ runner.os }}-${{ runner.arch }}-${{ env.AVD_NAME }}-api-${{ inputs.android_api_level }}-
             android-emulator-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Start mm_blocks webhook sidecar
-        if: contains(inputs.specs, 'mm_blocks_')
-        continue-on-error: true
-        env:
-          SITE_1_URL: ${{ env.SITE_1_URL }}
-          # test-public-project: mobile's tunnel secrets are not available here; the sidecar falls back as in mobile.
-          WEBHOOK_PUBLIC_BASE_URL: ""
-          CLOUDFLARED_TUNNEL_TOKEN: ""
-        run: bash detox/scripts/start_webhook_sidecar.sh
 
       - name: Create and run Android Emulator
         # test-public-project: the id, for ci/fail-on-failed-tests.

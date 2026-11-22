@@ -36,7 +36,7 @@ on:
         type: string
         default: "3"
       services:
-        description: "Comma-separated optional services: minio or azurite, elasticsearch or opensearch, keycloak, openldap"
+        description: "Comma-separated optional services: minio or azurite, elasticsearch or opensearch, keycloak, openldap, webhook"
         type: string
         default: ""
       ttl:

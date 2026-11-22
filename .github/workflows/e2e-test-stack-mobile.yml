@@ -348,6 +348,8 @@ jobs:
       count: ${{ steps.plan.outputs.count }}
       shards: ${{ steps.plan.outputs.shards }}
       shared: ${{ steps.plan.outputs.shared }}
+      services: ${{ steps.plan.outputs.services }}
+      webhook: ${{ steps.plan.outputs.webhook }}
     steps:
       - name: ci/checkout-mobile-specs
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -355,7 +357,9 @@ jobs:
           repository: ${{ env.MOBILE_REPOSITORY }}
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
-          sparse-checkout: detox/e2e/test
+          sparse-checkout: |
+            detox/e2e/test
+            detox/e2e/support
 
       - name: ci/plan-servers
         id: plan
@@ -382,6 +386,17 @@ jobs:
           elif grep -lqE 'site(Two|2)Url|server(Two|2)Url' "${files[@]}"; then
             shared=1
           fi
+          # The mm_blocks specs call back to the batch's webhook sidecar, which only mobile commits that know
+          # WEBHOOK_SIDECAR can use: they check it from the runner otherwise, which cannot reach it. From an older
+          # commit, no sidecar is requested, and the mm_blocks specs skip the tests that need one.
+          services=""
+          if [[ " ${files[*]} " == *mm_blocks_* ]]; then
+            if grep -rqsw 'WEBHOOK_SIDECAR' detox/e2e/support; then
+              services=webhook
+            else
+              echo "::warning::${MOBILE_REPOSITORY} at this commit does not support WEBHOOK_SIDECAR: no webhook sidecar, so the mm_blocks specs skip the tests that need one"
+            fi
+          fi
           n=$(jq '.include | length' <<< "$SPECS")
           # Shard i (in split order) gets server i; the shared ones follow.
           shards=$(jq -c '{include: [.include | to_entries[] | .value + {serverIndex: (.key | tostring)}]}' <<< "$SPECS")
@@ -389,6 +404,8 @@ jobs:
             echo "count=$((n + shared))"
             echo "shards=${shards}"
             echo "shared=$(jq -nc --argjson n "$n" --argjson s "$shared" '[range($n; $n + $s)]')"
+            echo "services=${services}"
+            echo "webhook=$([ "$services" = webhook ] && echo true || echo false)"
           } >> "$GITHUB_OUTPUT"
           echo "${n} shard(s), ${shared} shared server(s): $((n + shared)) in all" >> "$GITHUB_STEP_SUMMARY"
 
@@ -409,29 +426,51 @@ jobs:
       ttl: 2h
       license: enterprise-advanced
       shared_admin_password: true
-      # Matterwick's settings for mobile's E2E servers, with Shared Channels on from the start. Email is on, as on
-      # Matterwick's servers; the stack leaves it off.
-      server_env: >-
-        {"MM_SERVICESETTINGS_ENABLETUTORIAL":"false","MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW":"false",
-        "MM_SERVICESETTINGS_ENABLEUSERTYPINGMESSAGES":"false","MM_SERVICESETTINGS_SESSIONLENGTHMOBILEINHOURS":"5000",
-        "MM_SERVICESETTINGS_SESSIONCACHEINMINUTES":"180","MM_SERVICEENVIRONMENT":"test",
-        "MM_RATELIMITSETTINGS_ENABLE":"true","MM_RATELIMITSETTINGS_PERSEC":"10000","MM_RATELIMITSETTINGS_MAXBURST":"50000",
-        "MM_RATELIMITSETTINGS_MEMORYSTORESIZE":"10000","MM_RATELIMITSETTINGS_VARYBYREMOTEADDR":"false",
-        "MM_RATELIMITSETTINGS_VARYBYUSER":"false","MM_TEAMSETTINGS_EXPERIMENTALENABLEAUTOMATICREPLIES":"true",
-        "MM_FEATUREFLAGS_CHANNELBOOKMARKS":"true","MM_FEATUREFLAGS_CUSTOMPROFILEATTRIBUTES":"true",
-        "MM_FEATUREFLAGS_INTERACTIVEDIALOGAPPSFORM":"true","MM_FEATUREFLAGS_MMBLOCKSENABLED":"true",
-        "MM_FILESETTINGS_ENABLEPUBLICLINK":"true","MM_PASSWORDSETTINGS_MINIMUMLENGTH":"8",
-        "MM_PLUGINSETTINGS_ENABLEMARKETPLACE":"true","MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE":"true",
-        "MM_PLUGINSETTINGS_ENABLEUPLOADS":"true","MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION":"true",
-        "MM_SERVICESETTINGS_ENABLECHANNELBOOKMARKS":"true","MM_SERVICESETTINGS_MAXIMUMACTIVEUSERS":"999999",
-        "MM_SERVICESETTINGS_MAXIMUMLOGINATTEMPTS":"999999","MM_SERVICESETTINGS_SESSIONLENGTHWEBINHOURS":"4320",
-        "MM_SUPPORTSETTINGS_HELPLINK":"https://docs.mattermost.com/","MM_SUPPORTSETTINGS_REPORTAPROBLEMTYPE":"default",
-        "MM_TEAMSETTINGS_MAXUSERSPERTEAM":"999999","MM_EXPERIMENTALSETTINGS_ENABLEWATERMARK":"false",
-        "MM_EXPERIMENTALSETTINGS_RESTRICTSYSTEMADMIN":"false",
-        "MM_CONNECTEDWORKSPACESSETTINGS_ENABLEREMOTECLUSTERSERVICE":"true",
-        "MM_CONNECTEDWORKSPACESSETTINGS_ENABLESHAREDCHANNELS":"true",
-        "MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS":"true","MM_EMAILSETTINGS_FEEDBACKEMAIL":"test@example.com",
-        "MM_EMAILSETTINGS_REPLYTOADDRESS":"test@example.com"}
+      # The webhook sidecar the mm_blocks specs call back to, at http://webhook:3000 inside each server; only when the
+      # run has mm_blocks specs.
+      services: ${{ needs.plan.outputs.services }}
+      # mobile's E2E server settings, one per line, sorted by name: Shared Channels on from the start, and email on,
+      # which the stack leaves off.
+      server_env: |-
+        {
+          "MM_CONNECTEDWORKSPACESSETTINGS_ENABLEREMOTECLUSTERSERVICE": "true",
+          "MM_CONNECTEDWORKSPACESSETTINGS_ENABLESHAREDCHANNELS": "true",
+          "MM_EMAILSETTINGS_FEEDBACKEMAIL": "test@example.com",
+          "MM_EMAILSETTINGS_REPLYTOADDRESS": "test@example.com",
+          "MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS": "true",
+          "MM_EXPERIMENTALSETTINGS_ENABLEWATERMARK": "false",
+          "MM_EXPERIMENTALSETTINGS_RESTRICTSYSTEMADMIN": "false",
+          "MM_FEATUREFLAGS_CHANNELBOOKMARKS": "true",
+          "MM_FEATUREFLAGS_CUSTOMPROFILEATTRIBUTES": "true",
+          "MM_FEATUREFLAGS_INTERACTIVEDIALOGAPPSFORM": "true",
+          "MM_FEATUREFLAGS_MMBLOCKSENABLED": "true",
+          "MM_FILESETTINGS_ENABLEPUBLICLINK": "true",
+          "MM_PASSWORDSETTINGS_MINIMUMLENGTH": "8",
+          "MM_PLUGINSETTINGS_ENABLEMARKETPLACE": "true",
+          "MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE": "true",
+          "MM_PLUGINSETTINGS_ENABLEUPLOADS": "true",
+          "MM_RATELIMITSETTINGS_ENABLE": "true",
+          "MM_RATELIMITSETTINGS_MAXBURST": "50000",
+          "MM_RATELIMITSETTINGS_MEMORYSTORESIZE": "10000",
+          "MM_RATELIMITSETTINGS_PERSEC": "10000",
+          "MM_RATELIMITSETTINGS_VARYBYREMOTEADDR": "false",
+          "MM_RATELIMITSETTINGS_VARYBYUSER": "false",
+          "MM_SERVICEENVIRONMENT": "test",
+          "MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION": "true",
+          "MM_SERVICESETTINGS_ENABLECHANNELBOOKMARKS": "true",
+          "MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW": "false",
+          "MM_SERVICESETTINGS_ENABLETUTORIAL": "false",
+          "MM_SERVICESETTINGS_ENABLEUSERTYPINGMESSAGES": "false",
+          "MM_SERVICESETTINGS_MAXIMUMACTIVEUSERS": "999999",
+          "MM_SERVICESETTINGS_MAXIMUMLOGINATTEMPTS": "999999",
+          "MM_SERVICESETTINGS_SESSIONCACHEINMINUTES": "180",
+          "MM_SERVICESETTINGS_SESSIONLENGTHMOBILEINHOURS": "5000",
+          "MM_SERVICESETTINGS_SESSIONLENGTHWEBINHOURS": "4320",
+          "MM_SUPPORTSETTINGS_HELPLINK": "https://docs.mattermost.com/",
+          "MM_SUPPORTSETTINGS_REPORTAPROBLEMTYPE": "default",
+          "MM_TEAMSETTINGS_EXPERIMENTALENABLEAUTOMATICREPLIES": "true",
+          "MM_TEAMSETTINGS_MAXUSERSPERTEAM": "999999"
+        }
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
@@ -533,6 +572,7 @@ jobs:
       site_2_url: ${{ needs.provision-shared.outputs.site_2_url }}
       site_3_url: ${{ needs.provision-shared.outputs.site_3_url }}
       specs: ${{ matrix.specs }}
+      webhook: ${{ needs.plan.outputs.webhook == 'true' }}
       role: ${{ matrix.role }}
       device_name: ${{ matrix.deviceName }}
       device_os_version: ${{ matrix.deviceOsVersion }}
@@ -562,6 +602,7 @@ jobs:
       site_2_url: ${{ needs.provision-shared.outputs.site_2_url }}
       site_3_url: ${{ needs.provision-shared.outputs.site_3_url }}
       specs: ${{ matrix.specs }}
+      webhook: ${{ needs.plan.outputs.webhook == 'true' }}
       role: ${{ matrix.role }}
       android_avd_name: ${{ matrix.deviceName }}
       android_api_level: ${{ matrix.deviceOsVersion }}
