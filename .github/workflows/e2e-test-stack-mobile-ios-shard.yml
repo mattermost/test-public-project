@@ -41,6 +41,10 @@ on:
         description: "The shard's space-separated spec files"
         type: string
         required: true
+      webhook:
+        description: "The batch has the webhook sidecar, for mm_blocks specs"
+        type: boolean
+        default: false
       role:
         description: "pool or mutation"
         type: string
@@ -91,6 +95,11 @@ jobs:
     env:
       IOS: true
       # test-public-project: mobile's template sets these at its top; ADMIN_* and SITE_* come from the open step.
+      # The batch's webhook sidecar, when it has one, which the server calls inside the instance. The runner cannot
+      # reach it, so the mm_blocks specs skip their check from the runner; create reports ready only once the sidecar is
+      # configured. Empty without one, so the mm_blocks specs skip the tests that need it.
+      WEBHOOK_BASE_URL: ${{ inputs.webhook && 'http://webhook:3000' || '' }}
+      WEBHOOK_SIDECAR: ${{ inputs.webhook && 'e2e-test-stack' || '' }}
       RUNNING_E2E: "true"
       HEADLESS: "true"
       DEVICE_NAME: ${{ inputs.device_name }}
@@ -530,19 +539,6 @@ jobs:
           sudo mdutil -a -i off 2>/dev/null || true
 
           echo "✅ Simulator is healthy and ready"
-
-      - name: Start mm_blocks webhook sidecar
-        if: contains(inputs.specs, 'mm_blocks_')
-        continue-on-error: true
-        env:
-          SITE_1_URL: ${{ env.SITE_1_URL }}
-          # Prefer a stable public origin over trycloudflare (optional repo secrets).
-          # test-public-project: mobile's tunnel secrets are not available here; the sidecar falls back as in mobile.
-          WEBHOOK_PUBLIC_BASE_URL: ""
-          CLOUDFLARED_TUNNEL_TOKEN: ""
-        # mm_blocks specs are sharded alone (split-tests.js). This step must not hang:
-        # the script bounds all curls and exits 0 on tunnel failure so Jest still runs.
-        run: bash detox/scripts/start_webhook_sidecar.sh
 
       - name: Start Metro Bundler and Run Detox E2E Tests
         # test-public-project: the id, for ci/fail-on-failed-tests.
