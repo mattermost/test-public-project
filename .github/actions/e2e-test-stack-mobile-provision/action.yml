@@ -1,12 +1,14 @@
 ---
 # Copied from mattermost-mobile's .github/actions/provision-e2e-servers/action.yml (ebc91be6e), for
 # e2e-test-stack servers. One step is added, "Adapt mobile's provisioning to the stack": it drops the baseline's
-# AllowedUntrustedInternalConnections entry (the stack pins that setting), and installs only the demo plugin, enabling
-# the prepackaged Agents and Calls instead of downloading them. Otherwise unchanged.
+# AllowedUntrustedInternalConnections entry (the stack pins that setting). Provisioning runs with
+# E2E_SERVER_SOURCE=e2e-test-stack, as mobile's own e2e-test-stack provisioning does, so mobile enables and checks the
+# prepackaged Agents and Calls instead of downloading them. Otherwise unchanged.
 name: Provision E2E test servers (e2e-test-stack)
 description: >-
   mattermost-mobile's provision-e2e-servers, for e2e-test-stack servers: the baseline's
-  AllowedUntrustedInternalConnections entry, which the stack pins, is dropped, and only the demo plugin is installed.
+  AllowedUntrustedInternalConnections entry, which the stack pins, is dropped, and provisioning runs with
+  E2E_SERVER_SOURCE=e2e-test-stack.
 
 inputs:
   server-urls:
@@ -76,23 +78,29 @@ runs:
         done <<< "$DEMO_PLUGIN_SERVER_URLS"
       shell: bash
 
-    # Mobile's provisioning, adapted to the stack in the checked-out code. Each edit fails if mobile's code no longer
+    # Mobile's provisioning, adapted to the stack in the checked-out code. The edit fails if mobile's code no longer
     # matches, so this copy is checked again:
     # - The stack pins AllowedUntrustedInternalConnections in the server's environment (the service aliases), so the
     #   baseline's entry asking for the server's own host is dropped.
-    # - Agents and Calls are prepackaged in the server image, running from the start: they are enabled if inactive and
-    #   never downloaded. The demo plugin, from its fixture, is the only plugin installed.
+    # Mobile's code must read E2E_SERVER_SOURCE, which makes it enable and check the prepackaged Agents and Calls rather
+    # than download them; a build whose code does not is refused.
     - name: Adapt mobile's provisioning to the stack
       run: |
         node -e '
           const fs = require("fs");
+          // Mobile must read E2E_SERVER_SOURCE and, for e2e-test-stack, enable the prepackaged plugins.
+          const reads = [
+            ["detox/provision/env.ts", /\benv\.E2E_SERVER_SOURCE\b/],
+            ["detox/provision/provision.ts", /\bif \(e2eTestStack && plugin\.prepackaged\)/],
+          ];
+          for (const [file, pattern] of reads) {
+            if (!fs.existsSync(file) || !pattern.test(fs.readFileSync(file, "utf8"))) {
+              console.error(`::error::this build\x27s mobile code does not act on E2E_SERVER_SOURCE (${file} does not match ${pattern}), so it would download Agents and Calls; use a newer build`);
+              process.exit(1);
+            }
+          }
           const edits = [
             ["detox/shared/server-baseline.ts", /^[ \t]*\x27ServiceSettings\.AllowedUntrustedInternalConnections\x27:.*\n/m, ""],
-            ["detox/provision/provision.ts", /^[ \t]*await ensureAgentsPlugin\(client, token\);\n/m, ""],
-            ["detox/provision/provision.ts", /^[ \t]*if \(plugin\.id === AGENTS_PLUGIN_ID\) \{\n[ \t]*continue;\n[ \t]*\}\n/m, ""],
-            ["detox/provision/constants.ts", /\{id: \x27com\.mattermost\.calls\x27, url: CALLS_PLUGIN_URL, fixture: null\}/, "{id: \x27com.mattermost.calls\x27, url: null, fixture: null}"],
-            ["detox/provision/plugins.ts", /^([ \t]*)logInfo\(`Installing \$\{pluginId\} from Marketplace\.\.\.`\);\n/m,
-              "$1if (pluginId !== DEMO_PLUGIN_ID) {\n$1    logWarn(`${pluginId} is not on the server; it is prepackaged in the stack image and is not downloaded.`);\n$1    return;\n$1}\n$&"],
           ];
           for (const [file, pattern, replacement] of edits) {
             const text = fs.readFileSync(file, "utf8");
@@ -129,6 +137,8 @@ runs:
       env:
         SERVER_URLS: ${{ inputs.server-urls }}
         DEMO_PLUGIN_SERVER_URLS: ${{ inputs.demo-plugin-server-urls }}
+        # The servers carry the prepackaged plugins; provisioning enables them rather than download them.
+        E2E_SERVER_SOURCE: e2e-test-stack
       run: |
         set -euo pipefail
         cd detox
