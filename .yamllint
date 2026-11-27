@@ -12,7 +12,6 @@ rules:
       .github/workflows/e2e-test-stack-mobile-ios-shard.yml
       .github/workflows/e2e-test-stack-mobile-v2-android.yml
       .github/workflows/e2e-test-stack-mobile-v2-ios.yml
-      .github/workflows/e2e-test-stack-mobile-v2-provision.yml
       .github/actions/e2e-test-stack-mobile-sites/action.yml
   # GitHub Actions' `on:` key is not a boolean.
   truthy:

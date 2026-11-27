@@ -2,19 +2,25 @@
 name: E2E Test Stack - Mobile v2 Android
 
 # Detox on e2e-test-stack, dispatched by Test System IO: one run per lane and one
-# worker matrix. Each worker owns its SITE_1 and shares SITE_2 and SITE_3. The
-# Detox configuration decides the specs (begin runs `detox --listTests`); specs
-# tagged @server_mutation dispatch last.
+# worker matrix. Each worker owns its SITE_1; SITE_2 and SITE_3 are two of the
+# first three workers' servers, where specs only create their own users and teams.
+# The Detox configuration decides the specs (begin runs `detox --listTests`).
+# Specs tagged @multi_server dispatch first, so they sign in to servers 0-2 before
+# specs tagged @server_mutation, which dispatch last, change them. Maestro and the
+# Matterwick template are unchanged.
 #
-# create and provision are the existing workflows. begin runs after provision,
-# because the orchestrator idles a run out while it waits for the first lease.
+# create is the existing workflow. There is no provisioning step: each spec sets up
+# what it needs on its worker's server (detox/e2e/test/setup.ts and the Setup
+# helpers). begin runs after create, because the orchestrator idles a run out while
+# it waits for the first lease.
 # Each worker boots one emulator, then dispatch-run leases specs onto it.
 #
-# test-public-project: mattermost-mobile's .github/workflows/e2e-android-template-v2.yml (e7bec8315), copied as is
-# but for the lines marked "test-public-project:". Called by e2e-test-stack-mobile-v2.yml, which re-uploads the app
+# test-public-project: mattermost-mobile's .github/workflows/e2e-android-template-v2.yml (33c707a19), copied as is but
+# for the lines marked "test-public-project:". Called by e2e-test-stack-mobile-v2.yml, which re-uploads the app
 # into this run, checks the commit under test (commit_sha, a mattermost-mobile commit) and destroys the batch. Its
-# jobs check out mattermost-mobile at commit_sha, use this repository's create, provision and sites copies, and
-# report to production Test System IO under this repository.
+# jobs check out mattermost-mobile at commit_sha, use this repository's create and sites copy, and report to
+# production Test System IO under this repository. With no fork input, mobile's fork-only steps (its trusted local
+# actions and restore-only caches) are left out, and the caches are always saved.
 
 on:
   workflow_call:
@@ -120,7 +126,6 @@ jobs:
       identity: ${{ steps.plan.outputs.identity }}
       workers: ${{ steps.plan.outputs.workers }}
       stack-count: ${{ steps.plan.outputs.stack-count }}
-      slices: ${{ steps.plan.outputs.slices }}
       webhook: ${{ steps.plan.outputs.webhook }}
     steps:
       - name: Checkout Repository
@@ -131,7 +136,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      # A server per worker, then the shared SITE_2 and SITE_3. Provisioning runs in up to 8 jobs.
+      # A server per worker, and at least 3 so every worker has a SITE_2 and SITE_3 among servers 0-2.
+      #
       # test-public-project: the identity is this repository's, named tsio_name, with the mobile commit and branch.
       - name: ci/plan
         id: plan
@@ -155,8 +161,13 @@ jobs:
             echo "::error::parallelism must be a positive integer, got '${PARALLELISM}'"
             exit 1
           fi
-          if ! grep -rqE '^export function isE2eTestStack\(' detox/provision; then
-            echo "::error::the code under test predates e2e-test-stack provisioning; merge main into it"
+          # The worker matrix is one job per worker, and a matrix has at most 256 jobs.
+          if [ "$PARALLELISM" -gt 256 ]; then
+            echo "::error::parallelism must be at most 256, got '${PARALLELISM}'"
+            exit 1
+          fi
+          if ! grep -qE '^export const ensureDemoPlugin = ' detox/e2e/support/server_api/server_setup.ts 2>/dev/null; then
+            echo "::error::the code under test predates spec-owned server setup; merge main into it"
             exit 1
           fi
 
@@ -170,7 +181,7 @@ jobs:
             --arg name "$TSIO_NAME" \
             --arg branch "$branch" \
             '{repository:$repo, commit_sha:$sha, gh_run_id:$run_id, gh_run_attempt:$attempt, name:$name, branch:$branch}')
-          count=$((PARALLELISM + 2))
+          count=$((PARALLELISM < 3 ? 3 : PARALLELISM))
           webhook=false
           if find detox/e2e/test -name 'mm_blocks_*.e2e.ts' | grep -q .; then
             webhook=true
@@ -180,7 +191,6 @@ jobs:
             echo "identity=${identity}"
             echo "workers=$(jq -nc --argjson n "$PARALLELISM" '[range(1; $n + 1)]')"
             echo "stack-count=${count}"
-            echo "slices=$(jq -nc --argjson n "$count" '[range(0; $n)] | group_by(. % 8) | map(map(tostring) | join(","))')"
             echo "webhook=${webhook}"
           } >> "$GITHUB_OUTPUT"
           echo "${PARALLELISM} workers, ${count} servers, webhook=${webhook}"
@@ -249,26 +259,10 @@ jobs:
     secrets:
       E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
 
-  e2e-test-stack-provision:
-    name: e2e-test-stack-provision
-    needs: [prepare, e2e-test-stack-create]
-    if: needs.e2e-test-stack-create.result == 'success'
-    permissions:
-      actions: read
-      contents: read
-    # test-public-project: this repository's copy of mobile's e2e-test-stack-provision.yml.
-    uses: ./.github/workflows/e2e-test-stack-mobile-v2-provision.yml
-    with:
-      batch: ${{ inputs.e2e_test_stack_batch }}
-      slices: ${{ needs.prepare.outputs.slices }}
-      commit_sha: ${{ inputs.commit_sha }}
-    secrets:
-      E2E_TEST_STACK_CREDENTIALS_KEY: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
-
   begin:
     name: dispatch-begin
-    needs: [prepare, e2e-test-stack-provision]
-    if: needs.e2e-test-stack-provision.result == 'success'
+    needs: [prepare, e2e-test-stack-create]
+    if: needs.e2e-test-stack-create.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -309,20 +303,21 @@ jobs:
           retest-on-fail: "true"
           post-pending-commit-status: "false"
           duration-base-branch: ""
-          idle-timeout-ms: "2700000"
+          idle-timeout-ms: "5400000"
           lease-timeout-ms: "1800000"
           detox-dir: detox
           detox-list-tests: ${{ inputs.specs == '' && 'true' || 'false' }}
           detox-specs: ${{ inputs.specs }}
           detox-config: ${{ inputs.detox_config }}
+          detox-sort-first: "@multi_server"
           detox-sort-last: "@server_mutation"
 
   dispatch-run:
     name: dispatch-run-${{ inputs.lane }}-${{ matrix.worker }}
-    needs: [prepare, e2e-test-stack-provision, begin]
+    needs: [prepare, e2e-test-stack-create, begin]
     if: >-
       !cancelled() &&
-      needs.e2e-test-stack-provision.result == 'success' &&
+      needs.e2e-test-stack-create.result == 'success' &&
       needs.begin.result == 'success'
     # test-public-project: the caller's runner, ubuntu-24.04 until this repository is granted a larger one.
     runs-on: ${{ inputs.runner }}
@@ -344,13 +339,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      # test-public-project: this repository's copy of mobile's e2e-test-stack-sites, beside mobile's checkout.
+      # This run's commit, not the commit under test.
+      # test-public-project: this repository's actions; e2e-test-stack-mobile-sites is mobile's e2e-test-stack-sites.
       - name: ci/e2e-test-stack-actions
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ github.sha }}
           path: .e2e-test-stack-actions
-          sparse-checkout: .github/actions/e2e-test-stack-mobile-sites
+          sparse-checkout: .github/actions
           persist-credentials: false
 
       - name: ci/e2e-test-stack-sites
@@ -359,6 +354,7 @@ jobs:
           batch: ${{ inputs.e2e_test_stack_batch }}
           shard: ${{ matrix.worker }}
           credentials-key: ${{ secrets.E2E_TEST_STACK_CREDENTIALS_KEY }}
+          layout: v2
 
       - name: ci/prepare-node-deps
         uses: ./.github/actions/prepare-node-deps

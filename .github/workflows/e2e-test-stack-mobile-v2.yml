@@ -3,10 +3,11 @@ name: E2E Test Stack - Mobile v2
 run-name: "Mobile E2E v2 (${{ inputs.lane }}) · ${{ inputs.mobile_test_branch }} · ${{ inputs.specs != '' && 'selected specs' || 'Detox configuration' }} · ${{ inputs.parallelism }} worker(s)"
 
 # By hand only: runs one lane of mattermost-mobile's Detox suite the way mobile's v2 templates do
-# (e2e-ios-template-v2.yml, e2e-android-template-v2.yml): one batch, a server per Test System IO worker plus the shared
-# SITE_2 and SITE_3, and production Test System IO leasing specs onto the workers, to prove the pipeline before
-# mobile's pull requests merge. The app is not built here: the run takes the build a mobile E2E run uploaded, by its
-# artifact link (ios-build-simulator-* for detox-ios and detox-ipad, android-build-files-* for detox-android). The
+# (e2e-ios-template-v2.yml, e2e-android-template-v2.yml): one batch, a server per Test System IO worker (at least 3 on
+# iOS and Android, whose SITE_2 and SITE_3 are two of servers 0-2), specs that set up their own server state, and
+# production Test System IO leasing specs onto the workers, to prove the pipeline before mobile's pull requests merge.
+# The app is not built here: the run takes the build a mobile E2E run uploaded, by its artifact link
+# (ios-build-simulator-* for detox-ios and detox-ipad, android-build-files-* for detox-android). The
 # tests run from mobile_test_sha on mobile_test_branch (or the branch's head), which may differ from the build's
 # commit only under detox/ and .github/ and in Markdown files. Results go to Test System IO under this repository as
 # mobile-v2-<lane>.
@@ -34,19 +35,19 @@ on:
         description: "mattermost-mobile branch whose tests run; its app files must match the build's commit"
         required: false
         type: string
-        default: "e2e-tests-tsio"
+        default: "e2e-tests-provision"
       mobile_test_sha:
         description: "A full 40-character commit on mobile_test_branch to test; empty for the branch's head"
         required: false
         type: string
-        default: "e7bec8315f06198e0885c200a328b5ac38cc0371"
+        default: "33c707a1957b6869b09277344ccc4fdb3f6ce2e5"
       specs:
         description: "Space-separated specs relative to detox/ to queue, e.g. e2e/test/products/channels/smoke_test/account.e2e.ts; empty for every spec of the lane's Detox configuration"
         required: false
         type: string
         default: ""
       parallelism:
-        description: "Test System IO workers, each on its own server"
+        description: "Test System IO workers, 1 to 32, each on its own server"
         required: false
         type: string
         default: "4"
@@ -432,8 +433,8 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # As mobile's detox-ios and detox-ipad: the iPad's device and Detox configuration for detox-ipad. The lane creates,
-  # provisions and runs its batch, and reports to Test System IO.
+  # As mobile's detox-ios and detox-ipad: the iPad's device and Detox configuration for detox-ipad. The lane creates
+  # and runs its batch, and reports to Test System IO.
   lane-ios:
     name: Detox ${{ inputs.lane == 'detox-ipad' && 'iPad' || 'iOS' }}
     needs: [resolve, app]
