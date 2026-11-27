@@ -1,32 +1,22 @@
 ---
-# Copied from mattermost-mobile's .github/actions/e2e-test-stack-sites/action.yml (9256f93a2), for
-# e2e-test-stack-mobile-v2-*.yml. The only change, marked "test-public-project:", is the open action's caller key.
+# Copied from mattermost-mobile's .github/actions/e2e-test-stack-sites/action.yml (e7bec8315), for
+# e2e-test-stack-mobile-v2-*.yml. The changes, marked "test-public-project:", are the open action's caller key and
+# no role or target inputs: mobile's legacy templates pass those for their pool and mutation shards, and its v2
+# templates, like these, never do.
 name: E2E test stack sites
 description: >-
-  Points a Detox shard at its e2e-test-stack servers: SITE_1 is the shard's own server,
-  or the shared SITE_3 for a site3 mutation shard; SITE_2 is the batch's shared second-to-last server; SITE_3, unless
-  a mutation shard, the shared last one; ADMIN_* is the batch's one admin. Opens this run's batch with the toolkit's
-  open action, which reads its create response from whichever attempt created it and accepts only this run's batch,
-  so the job needs actions: read. Writes the sites, the admin, E2E_SERVER_ROLE and E2E_POOL_GUARD to GITHUB_ENV.
-  Leaves Node 26 set up.
+  Points a Detox worker at its e2e-test-stack servers: SITE_1 is the worker's own server; SITE_2 and SITE_3 are the
+  batch's shared last two; ADMIN_* is the batch's one admin. Opens this run's batch with the toolkit's open action,
+  which reads its create response from whichever attempt created it and accepts only this run's batch, so the job
+  needs actions: read. Writes the sites, the admin and E2E_POOL_GUARD to GITHUB_ENV. Leaves Node 26 set up.
 
 inputs:
   batch:
     description: The batch create named, e.g. dt-ios-pr
     required: true
   shard:
-    description: The shard's 1-based run id; its own server is index shard - 1
+    description: The worker's 1-based run id; its own server is index shard - 1
     required: true
-  role:
-    description: >-
-      The Matterwick shard's role, pool or mutation. Empty for a Test System IO worker, which owns its SITE_1 and
-      gets no E2E_SERVER_ROLE.
-    required: false
-    default: ""
-  target:
-    description: A mutation shard's server target, B (its own server) or site3 (the shared SITE_3)
-    required: false
-    default: ""
   credentials-key:
     description: The repository's credentials key, which opens the batch's sealed server credentials
     required: true
@@ -34,23 +24,17 @@ inputs:
 runs:
   using: composite
   steps:
-    # Before the batch is opened: the shard and its role are this run's own settings.
+    # Before the batch is opened: the shard is this run's own setting.
     - name: check-shard
       shell: bash
       env:
         SHARD: ${{ inputs.shard }}
-        ROLE: ${{ inputs.role }}
-        TARGET: ${{ inputs.target }}
       run: |
         set -euo pipefail
         if ! [[ "$SHARD" =~ ^[1-9][0-9]*$ ]]; then
           echo "::error::shard must be a positive integer"
           exit 1
         fi
-        case "${ROLE}:${TARGET}" in
-          : | pool:A | mutation:B | mutation:site3) ;;
-          *) echo "::error::unknown shard role and target '${ROLE}:${TARGET}': none, pool:A, mutation:B or mutation:site3"; exit 1 ;;
-        esac
 
     - name: setup-node
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -76,8 +60,6 @@ runs:
       env:
         BATCH: ${{ inputs.batch }}
         SHARD: ${{ inputs.shard }}
-        ROLE: ${{ inputs.role }}
-        TARGET: ${{ inputs.target }}
         INSTANCES: ${{ steps.open.outputs.instances }}
       run: |
         set -euo pipefail
@@ -88,15 +70,10 @@ runs:
         fi
         site2_index=$((count - 2))
         site3_index=$((count - 1))
-        if [ "$ROLE" = mutation ] && [ "$TARGET" = site3 ]; then
-          # The site3 mutation specs run on the shared SITE_3.
-          server=$site3_index
-        else
-          server=$((SHARD - 1))
-          if [ "$server" -ge "$site2_index" ]; then
-            echo "::error::shard ${SHARD} has no server of its own in a batch of ${count}"
-            exit 1
-          fi
+        server=$((SHARD - 1))
+        if [ "$server" -ge "$site2_index" ]; then
+          echo "::error::shard ${SHARD} has no server of its own in a batch of ${count}"
+          exit 1
         fi
         field() { jq -r --argjson i "$1" --arg f "$2" '.[$i][$f] // ""' <<< "$INSTANCES"; }
         site1=$(field "$server" site_url)
@@ -113,13 +90,7 @@ runs:
           echo "::error::the batch has no admin for server ${server}"
           exit 1
         fi
-        # A mutation shard gets no SITE_3. A worker without a role owns SITE_1, so only SITE_2 and SITE_3 are guarded.
-        case "$ROLE" in
-          pool) GUARD=enforce ;;
-          "") GUARD=shared ;;
-          *) GUARD=off ;;
-        esac
-        if [ "$ROLE" = mutation ]; then site3=""; fi
+        # The worker owns SITE_1, so only the shared SITE_2 and SITE_3 are guarded.
         {
           echo "SITE_1_URL=$site1"
           echo "SITE_2_URL=$site2"
@@ -127,9 +98,6 @@ runs:
           echo "ADMIN_USERNAME=$username"
           echo "ADMIN_PASSWORD=$password"
           echo "ADMIN_EMAIL=$email"
-          echo "E2E_SERVER_ROLE=$ROLE"
-          echo "E2E_POOL_GUARD=$GUARD"
+          echo "E2E_POOL_GUARD=shared"
         } >> "$GITHUB_ENV"
-        site3_label="server $site3_index"
-        [ -n "$site3" ] || site3_label="unset"
-        echo "role=${ROLE:-none}: SITE_1=server $server, SITE_2=server $site2_index, SITE_3=${site3_label}, pool_guard=$GUARD"
+        echo "SITE_1=server $server, SITE_2=server $site2_index, SITE_3=server $site3_index, pool_guard=shared"

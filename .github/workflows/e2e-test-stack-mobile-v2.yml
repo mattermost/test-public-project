@@ -39,7 +39,7 @@ on:
         description: "A full 40-character commit on mobile_test_branch to test; empty for the branch's head"
         required: false
         type: string
-        default: "9256f93a29cc7f30359401bc8d85b42349682730"
+        default: "e7bec8315f06198e0885c200a328b5ac38cc0371"
       specs:
         description: "Space-separated specs relative to detox/ to queue, e.g. e2e/test/products/channels/smoke_test/account.e2e.ts; empty for every spec of the lane's Detox configuration"
         required: false
@@ -307,7 +307,7 @@ jobs:
           fi
           echo "${BUILT} and ${TESTED} differ only under detox/ and .github/ and in Markdown files"
 
-      # The latest mattermost/mattermost release unless one is given, as Matterwick picks for mobile.
+      # The latest mattermost/mattermost release unless one is given.
       - name: ci/resolve-server-image
         id: image
         env:

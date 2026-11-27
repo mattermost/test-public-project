@@ -4,14 +4,13 @@ name: E2E Test Stack - Mobile v2 Android
 # Detox on e2e-test-stack, dispatched by Test System IO: one run per lane and one
 # worker matrix. Each worker owns its SITE_1 and shares SITE_2 and SITE_3. The
 # Detox configuration decides the specs (begin runs `detox --listTests`); specs
-# tagged @server_mutation dispatch last. Maestro and the Matterwick template are
-# unchanged.
+# tagged @server_mutation dispatch last.
 #
 # create and provision are the existing workflows. begin runs after provision,
 # because the orchestrator idles a run out while it waits for the first lease.
 # Each worker boots one emulator, then dispatch-run leases specs onto it.
 #
-# test-public-project: mattermost-mobile's .github/workflows/e2e-android-template-v2.yml (9256f93a2), copied as is
+# test-public-project: mattermost-mobile's .github/workflows/e2e-android-template-v2.yml (e7bec8315), copied as is
 # but for the lines marked "test-public-project:". Called by e2e-test-stack-mobile-v2.yml, which re-uploads the app
 # into this run, checks the commit under test (commit_sha, a mattermost-mobile commit) and destroys the batch. Its
 # jobs check out mattermost-mobile at commit_sha, use this repository's create, provision and sites copies, and
