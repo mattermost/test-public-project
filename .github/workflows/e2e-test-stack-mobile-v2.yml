@@ -39,7 +39,7 @@ on:
         description: "A full 40-character commit on mobile_test_branch to test; empty for the branch's head"
         required: false
         type: string
-        default: "b7725f5edef18e498b46e43b44cc2da29dcac390"
+        default: "9256f93a29cc7f30359401bc8d85b42349682730"
       specs:
         description: "Space-separated specs relative to detox/ to queue, e.g. e2e/test/products/channels/smoke_test/account.e2e.ts; empty for every spec of the lane's Detox configuration"
         required: false

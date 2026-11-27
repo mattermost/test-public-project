@@ -1,5 +1,5 @@
 ---
-# Copied from mattermost-mobile's .github/actions/e2e-test-stack-sites/action.yml (b7725f5ed), for
+# Copied from mattermost-mobile's .github/actions/e2e-test-stack-sites/action.yml (9256f93a2), for
 # e2e-test-stack-mobile-v2-*.yml. The only change, marked "test-public-project:", is the open action's caller key.
 name: E2E test stack sites
 description: >-

@@ -7,7 +7,7 @@ name: E2E Test Stack - Mobile v2 Provision
 # batch with the toolkit's open action, which reads this run's create response with no AWS role and accepts only this
 # run's batch.
 #
-# mattermost-mobile's .github/workflows/e2e-test-stack-provision.yml (b7725f5ed), copied as is but for the lines
+# mattermost-mobile's .github/workflows/e2e-test-stack-provision.yml (9256f93a2), copied as is but for the lines
 # marked "test-public-project:". Mobile's provisioning action and code run from mattermost-mobile at commit_sha.
 
 on:

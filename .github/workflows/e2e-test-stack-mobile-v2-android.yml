@@ -11,7 +11,7 @@ name: E2E Test Stack - Mobile v2 Android
 # because the orchestrator idles a run out while it waits for the first lease.
 # Each worker boots one emulator, then dispatch-run leases specs onto it.
 #
-# test-public-project: mattermost-mobile's .github/workflows/e2e-android-template-v2.yml (b7725f5ed), copied as is
+# test-public-project: mattermost-mobile's .github/workflows/e2e-android-template-v2.yml (9256f93a2), copied as is
 # but for the lines marked "test-public-project:". Called by e2e-test-stack-mobile-v2.yml, which re-uploads the app
 # into this run, checks the commit under test (commit_sha, a mattermost-mobile commit) and destroys the batch. Its
 # jobs check out mattermost-mobile at commit_sha, use this repository's create, provision and sites copies, and
@@ -430,7 +430,7 @@ jobs:
       - name: Accept Android licenses
         run: |
           mkdir -p ~/.android
-          yes | sdkmanager --licenses > sdk_licenses_output.txt || true
+          { yes || true; } | sdkmanager --licenses > sdk_licenses_output.txt || true
           if grep -q "All SDK package licenses accepted" sdk_licenses_output.txt; then
             echo "✅ All licenses accepted successfully."
           else
@@ -478,9 +478,9 @@ jobs:
             echo "Invalid android_api_level: $API_LEVEL"
             exit 1
           fi
+          # Under pipefail, `yes` exits 141 (SIGPIPE) once sdkmanager closes stdin.
           for attempt in 1 2 3; do
             echo "SDK install attempt $attempt..."
-            # test-public-project: yes dies of SIGPIPE once sdkmanager exits, which pipefail would count as a failure.
             if { yes || true; } | sdkmanager --install "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "system-images;android-${API_LEVEL};google_apis;x86_64"; then
               echo "SDK install succeeded on attempt $attempt"
               break
