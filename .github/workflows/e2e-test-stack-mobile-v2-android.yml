@@ -300,7 +300,7 @@ jobs:
       # specs in place of the Detox configuration's list.
       - name: ci/dispatch-begin
         id: begin
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@a136951bc3f779834010aa219e1d38a0d70a340b # detox-spec-list: detox-list-tests, detox-sort-last
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-begin@detox-spec-list # TODO: pin to SHA after mattermost-test-system-io#153 merges
         with:
           framework: detox
           use-staging: "false"
@@ -528,7 +528,7 @@ jobs:
       # test-public-project: production Test System IO, as in begin.
       - name: ci/dispatch-run
         timeout-minutes: 150
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@a136951bc3f779834010aa219e1d38a0d70a340b # detox-spec-list: detox-list-tests, detox-sort-last
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-dispatch-run@detox-spec-list # TODO: pin to SHA after mattermost-test-system-io#153 merges
         with:
           framework: detox
           use-staging: "false"
@@ -563,7 +563,7 @@ jobs:
       # test-public-project: production Test System IO, as in begin; no pull request.
       - name: ci/run-summary
         id: summary
-        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summary@a136951bc3f779834010aa219e1d38a0d70a340b # detox-spec-list: detox-list-tests, detox-sort-last
+        uses: mattermost/mattermost-test-system-io/.github/actions/test-system-io-summary@detox-spec-list # TODO: pin to SHA after mattermost-test-system-io#153 merges
         with:
           framework: detox
           use-staging: "false"
