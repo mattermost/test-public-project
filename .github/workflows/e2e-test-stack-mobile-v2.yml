@@ -170,6 +170,17 @@ jobs:
             echo "::error::artifact ${name} has expired"
             exit 1
           fi
+          # download-artifact finds an artifact by id only among the newest of each name in the run.
+          if ! newest=$(e2e-test-stack/scripts/gh-api.sh --paginate "repos/${MOBILE_REPOSITORY}/actions/runs/${run_id}/artifacts?name=${name}&per_page=100" \
+            --jq '.artifacts[].id' 2>&1); then
+            echo "::error::the artifacts of run ${run_id} of ${MOBILE_REPOSITORY} could not be read: ${newest}"
+            exit 1
+          fi
+          newest=$(sort -n <<< "$newest" | tail -1)
+          if [ "$newest" != "$artifact_id" ]; then
+            echo "::error::run ${run_id} has a newer ${name} artifact, ${newest}; use https://github.com/${MOBILE_REPOSITORY}/actions/runs/${run_id}/artifacts/${newest}"
+            exit 1
+          fi
           if ! info=$(e2e-test-stack/scripts/gh-api.sh "repos/${MOBILE_REPOSITORY}/actions/runs/${run_id}" \
             --jq '[.head_sha, .head_branch, .name, .head_repository.full_name] | @tsv' 2>&1); then
             echo "::error::run ${run_id} of ${MOBILE_REPOSITORY} could not be read: ${info}"
