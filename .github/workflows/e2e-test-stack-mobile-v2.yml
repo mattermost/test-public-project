@@ -339,6 +339,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: ci/download-mobile-build
+        id: download
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           artifact-ids: ${{ needs.resolve.outputs.artifact_id }}
@@ -346,6 +347,28 @@ jobs:
           run-id: ${{ needs.resolve.outputs.run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/build
+
+      # A re-run can upload a newer artifact of the same name after resolve checked it, which hides the checked one.
+      - name: ci/explain-download-failure
+        if: failure() && steps.download.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ needs.resolve.outputs.run_id }}
+          ARTIFACT_ID: ${{ needs.resolve.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          if ! name=$(gh api "repos/${MOBILE_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" --jq .name 2>&1); then
+            echo "::error::artifact ${ARTIFACT_ID} could not be read: ${name}"
+            exit 1
+          fi
+          newest=$(gh api --paginate "repos/${MOBILE_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?name=${name}&per_page=100" \
+            --jq '.artifacts[].id' | sort -n | tail -1)
+          if [ -n "$newest" ] && [ "$newest" != "$ARTIFACT_ID" ]; then
+            echo "::error::run ${RUN_ID} uploaded a newer ${name} artifact, ${newest}, after resolve checked ${ARTIFACT_ID}; use https://github.com/${MOBILE_REPOSITORY}/actions/runs/${RUN_ID}/artifacts/${newest}"
+          else
+            echo "::error::artifact ${ARTIFACT_ID} (${name}) of run ${RUN_ID} could not be downloaded"
+          fi
+          exit 1
 
       - name: ci/check-ios-app
         if: needs.resolve.outputs.platform == 'ios'
