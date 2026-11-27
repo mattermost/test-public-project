@@ -480,7 +480,8 @@ jobs:
           fi
           for attempt in 1 2 3; do
             echo "SDK install attempt $attempt..."
-            if yes | sdkmanager --install "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "system-images;android-${API_LEVEL};google_apis;x86_64"; then
+            # test-public-project: yes dies of SIGPIPE once sdkmanager exits, which pipefail would count as a failure.
+            if { yes || true; } | sdkmanager --install "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "system-images;android-${API_LEVEL};google_apis;x86_64"; then
               echo "SDK install succeeded on attempt $attempt"
               break
             fi
