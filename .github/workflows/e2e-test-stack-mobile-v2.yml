@@ -40,7 +40,7 @@ on:
         description: "A commit SHA (7 to 40 hex characters) on mobile_test_branch to test; empty for the branch's head"
         required: false
         type: string
-        default: "e22df15071eb76f9b6cd5872ef990c38439349d9"
+        default: "220a61aae7009fa16a2ce2a462c1d99f5f30100d"
       specs:
         description: "Space-separated specs relative to detox/ to queue, e.g. e2e/test/products/channels/smoke_test/account.e2e.ts; empty for every spec of the lane's Detox configuration"
         required: false
