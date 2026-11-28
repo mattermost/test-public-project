@@ -37,10 +37,10 @@ on:
         type: string
         default: "e2e-tests-provision"
       mobile_test_sha:
-        description: "A full 40-character commit on mobile_test_branch to test; empty for the branch's head"
+        description: "A commit SHA (7 to 40 hex characters) on mobile_test_branch to test; empty for the branch's head"
         required: false
         type: string
-        default: "33c707a1957b6869b09277344ccc4fdb3f6ce2e5"
+        default: "e22df15071eb76f9b6cd5872ef990c38439349d9"
       specs:
         description: "Space-separated specs relative to detox/ to queue, e.g. e2e/test/products/channels/smoke_test/account.e2e.ts; empty for every spec of the lane's Detox configuration"
         required: false
@@ -247,9 +247,17 @@ jobs:
             echo "::error::mobile_test_branch must be a branch name, got '${BRANCH}'"
             exit 1
           fi
-          if [ -n "$SHA" ] && ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::mobile_test_sha must be a full 40-character SHA, or empty, got '${SHA}'"
+          if [ -n "$SHA" ] && ! [[ "$SHA" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "::error::mobile_test_sha must be a SHA of 7 to 40 hex characters, or empty, got '${SHA}'"
             exit 1
+          fi
+          if [ -n "$SHA" ] && [ "${#SHA}" -lt 40 ]; then
+            if ! full=$(e2e-test-stack/scripts/gh-api.sh "repos/${MOBILE_REPOSITORY}/commits/${SHA}" --jq .sha 2>&1) \
+              || ! [[ "$full" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::${SHA} is not a commit of ${MOBILE_REPOSITORY}: ${full}"
+              exit 1
+            fi
+            SHA=$full
           fi
           if ! head=$(e2e-test-stack/scripts/gh-api.sh "repos/${MOBILE_REPOSITORY}/branches/${BRANCH}" --jq .commit.sha 2>&1); then
             echo "::error::${BRANCH} is not a branch of ${MOBILE_REPOSITORY}: ${head}"
